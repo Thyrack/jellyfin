@@ -8,7 +8,8 @@ VARIANT="${1:-}"
 case "$VARIANT" in
   sw)         CFG_EXTRA="" ;;
   v4l2m2m)    CFG_EXTRA="--enable-v4l2-m2m" ;;
-  mediacodec) CFG_EXTRA="--enable-mediacodec" ;;
+  # ffjni requis par le backend MediaCodec (constat de configure du run T8)
+  mediacodec) CFG_EXTRA="--enable-mediacodec --enable-jni" ;;
   nvdec)      CFG_EXTRA="--enable-nvdec" ;;
   *) die "variant inconnu ou absent : '$VARIANT' (attendu : sw | v4l2m2m | mediacodec | nvdec)." ;;
 esac

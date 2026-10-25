@@ -36,8 +36,14 @@ push_variant() { # push <variant> : binaire sur l'appareil puis listage des enco
   fi
   run_adb push "$bin" "/data/local/tmp/jf-ffmpeg-$variant"
   shell_cmd "chmod 744 /data/local/tmp/jf-ffmpeg-$variant"
-  shell_cmd "/data/local/tmp/jf-ffmpeg-$variant -hide_banner -encoders 2>/dev/null | grep -E 'v4l2m2m|mediacodec|nvdec'" \
-    > "$DATA_DIR/g2-encoders-$variant.txt" 2>&1
+  if ! shell_cmd "test -x /data/local/tmp/jf-ffmpeg-$variant"; then
+    warn "push du binaire $variant non vérifié sur l'appareil — skipping les mesures."
+    return 1
+  fi
+  if ! shell_cmd "/data/local/tmp/jf-ffmpeg-$variant -hide_banner -encoders 2>/dev/null | grep -E 'v4l2m2m|mediacodec|nvdec'" \
+    > "$DATA_DIR/g2-encoders-$variant.txt" 2>&1; then
+    printf 'listage encodeurs échoué (binaire sans backend hw ou fichier vide)\n' > "$DATA_DIR/g2-encoders-$variant.txt"
+  fi
   return 0
 }
 
@@ -78,7 +84,11 @@ main() {
 mediacodec_bench() { # marche MediaCodec : exécutée seulement si l'encodeur existe (constat T8 via config.h)
   local tsv="$1"
   local bin="$PROBE_DIR/out/ffmpeg-mediacodec/ffmpeg"
-  [ -x "$bin" ] || return 0
+  if [ ! -x "$bin" ]; then
+    warn "mediacodec : binaire absent (build échoué au configure) — constat no-go consigné."
+    printf 'mediacodec\tconstat\tno-go : binaire absent (configure KO, cf. out/ffmpeg-mediacodec/configure.log)\t0\t\n' >> "$tsv"
+    return 0
+  fi
   if grep -q "ENCODEUR PRÉSENT" "$PROBE_DIR/out/ffmpeg-mediacodec/encoders-presence.txt" 2>/dev/null; then
     run_adb push "$bin" /data/local/tmp/jf-ffmpeg-mediacodec
     shell_cmd 'chmod 744 /data/local/tmp/jf-ffmpeg-mediacodec'

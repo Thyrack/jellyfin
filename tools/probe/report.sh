@@ -7,7 +7,12 @@ ensure_data_dir
 REPORT="$PROBE_DIR/../../docs/jellyfin-shield/probe-report.md"
 
 main() {
-  # garde anti-écrasement : un rapport déjà complété (verdicts saisis) n'est pas régénéré par accident
+  # garde anti-écrasement : TOUT rapport existant (complétion partielle comprise) est protégé sans --force
+  local force="${1:-}"
+  if [ -f "$REPORT" ] && [ "$force" != "--force" ]; then
+    die "probe-report.md existe déjà (complétion partielle possible) — régénération refusée sans '--force'."
+  fi
+  # garde « sans <à compléter> » : même avec --force, un rapport déjà complété n'est pas écrasé
   if [ -f "$REPORT" ] && ! grep -q "<à compléter>" "$REPORT"; then
     die "probe-report.md est déjà complété : re-génération refusée (supprimez le fichier pour repartir de zéro)."
   fi
@@ -32,4 +37,4 @@ main() {
   log "rapport : $REPORT"
 }
 
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then main; fi
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

@@ -27,7 +27,7 @@
     bash tools/probe/build-ffmpeg.sh mediacodec  # T8 — variante MediaCodec
     bash tools/probe/build-ffmpeg.sh nvdec       # T8 — nvdec (constat attendu)
     bash tools/probe/bench.sh                    # G2 — benchmarks fps
-    bash tools/probe/report.sh                   # G2 — rapport consolidé
+    bash tools/probe/report.sh                   # G2 — rapport consolidé (refusé si probe-report.md existe déjà : ajouter --force pour régénérer)
 Plus la mini-sonde APK (Task 5) : `cd app-probe && ./gradlew :app:assembleDebug` puis
 `adb install app-probe/app/build/outputs/apk/debug/app-debug.apk`.
 
