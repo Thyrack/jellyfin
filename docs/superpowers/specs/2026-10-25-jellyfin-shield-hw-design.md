@@ -2,7 +2,7 @@
 
 - **Date** : 2026-10-25
 - **Projet** : exécuter un Jellyfin Server sur NVIDIA Shield Android TV 16 Go (2015/2017, modèle « foster », Tegra X1, Android 8.0) en *serveur local maison*, avec un accès progressif à l'accélération matérielle du Tegra.
-- **Statut** : approuvé par le propriétaire (plan v1) — priorité : sondage puis APK, **sans Termux**.
+- **Statut** : approuvé par le propriétaire (plan v1) — priorité : sondage puis APK, **sans Termux**. Amendement v1.1 : sondages pilotables sans contact physique (ADB réseau prioritaire, sonde APK en repli).
 
 ---
 
@@ -32,18 +32,18 @@ Le serveur Jellyfin officiel cible Linux, Windows, macOS et Docker ; il n'existe
 - **ffmpeg embarqué** : `jellyfin-ffmpeg` buildé pour Android (référence : la recette `jellyfin-ffmpeg` de termux-packages, cible Android), placé dans `filesDir` et référencé au serveur via l'option CLI `--ffmpeg`.
 - **UI admin** : servie par le serveur lui-même ; bundle `jellyfin-web` (dist) embarqué dans l'APK et attaché au serveur via `--webdir` (répertoire web explicite).
 - **Stockage** : données / config / cache / métadonnées / logs dans `filesDir` ; bibliothèque média = **disque USB de la Shield**, fichiers en lecture seule attendue (autorisation de stockage *legacy* à valider en G1) ; le disque doit être monté par Android sous `/storage/<UUID>`. Si G1 établit par ailleurs que ce disque est accessible **en écriture**, le répertoire temporaire de transcodage pourra y être déplacé (option explicitée en G1) ; sinon, tout reste sur le stockage interne.
-- **Port** : 8096 par défaut ; toute la logistique se pilote depuis un PC via ADB (installation de l'APK, `adb shell`, binaires de sondage poussés dans `/data/local/tmp`).
+- **Port** : 8096 par défaut ; la logistique privilégie **ADB en réseau** (`adb connect <ip>`, activé dans les options développeur de la Shield) pour l'installation de l'APK et le shell à distance ; si ADB réseau n'est pas activable, repli « sonde APK » autonome sans PC (installation par clé USB + explorateur de fichiers de la TV). Les binaires de sondage s'exécutent depuis `filesDir` de l'APK de sonde, ou dans `/data/local/tmp` si ADB est actif.
 
 ## 3. Jalons (portes de décision)
 
-Chaque jalon est une *porte* : validation explicite du propriétaire avant passage à la suivante. Les sondages G0-G1-G2 sont **non invasifs** (aucune altération système ; tous les fichiers de test résident dans `/data/local/tmp` ou l'APK de sonde).
+Chaque jalon est une *porte* : validation explicite du propriétaire avant passage à la suivante. Les sondages G0-G1-G2 sont **non invasifs** (aucune altération système ; tous les fichiers de test résident dans `filesDir` de l'APK de sonde, ou `/data/local/tmp` si ADB réseau est actif).
 
 ### G0 — Audit de l'appareil
-- Contenu : `getprop` (API 26, ABI aarch64, RAM), `cat /proc/meminfo`, `ls /dev` (nœuds `video*` / `nvhost*`), `cat /system/etc/public.libraries.txt` (recherche `nvmedia|nvmpeg|nvidia`), micro-binaire statique testant `dlopen` sur `libnvmedia.so`, `libnvmpeg11.so`, `libnvhost.so`.
-- Critère : faisabilité numérique par marche (M2M / MediaCodec / NVMedia) documentée.
+- Contenu : `getprop` (API 26, ABI aarch64, RAM), `cat /proc/meminfo`, listing de `/dev` (nœuds `video*` / `nvhost*`), `cat /system/etc/public.libraries.txt` (recherche `nvmedia|nvmpeg|nvidia`), micro-binaire statique testant `dlopen` sur `libnvmedia.so`, `libnvmpeg11.so`, `libnvhost.so`. **Les tests `dlopen` s'exécutent dans le namespace linker applicatif (mini-sonde APK)**, plus fidèle au contexte cible que le contexte `adb shell` ; diagnostics bonus si ADB réseau est actif : `dmesg`, `lsusb`.
+- Critère : faisabilité numérique par marche (M2M / MediaCodec / NVMedia) documentée + disponibilité d'ADB réseau tranchée (actif / repli « sonde APK »).
 
 ### G1 — Accès au stockage de la bibliothèque
-- Contenu : `adb push` d'un `ffprobe` statique ; lecture d'un fichier média sur `/storage/<UUID>` ; vérification de l'écriture dans `filesDir` de l'APK de sonde.
+- Contenu : `ffprobe` statique embarqué dans l'APK de sonde (ou poussé via ADB dans `/data/local/tmp`) ; lecture d'un fichier média sur `/storage/<UUID>` ; vérification de l'écriture dans `filesDir` de l'APK de sonde.
 - Critère : ffprobe lit un média du disque USB + scan de bibliothèque sur 10 fichiers test.
 - Échelle de repli si la lecture échoue :
   1. Répertoires SAF persistés via le wrapper + pont de fichiers vers `filesDir` (solution partielle, débit limité) ;
@@ -51,7 +51,7 @@ Chaque jalon est une *porte* : validation explicite du propriétaire avant passa
   3. Pivot documenté du projet (« serveur ailleurs »), issu de la validation du propriétaire.
 
 ### G2 — Sondage HW (cœur du travail)
-- Builds croisés de `ffmpeg` NDK **statiques** de test (exécutables depuis `/data/local/tmp`) :
+- Builds croisés de `ffmpeg` NDK **statiques** de test (exécutables depuis `filesDir` de l'APK de sonde, ou depuis `/data/local/tmp` si ADB réseau est actif) :
   - a) `--enable-v4l2-m2m` + profils `h264_v4l2m2m`, `hevc_v4l2m2m` ;
   - b) `--enable-mediacodec` : hwaccel de décodage + vérification de la présence éventuelle d'un encodeur `h264_mediacodec` dans la base ffmpeg retenue ;
   - c) hwaccel `nvdec` (NVMedia-Jetson) si les `libnvmpeg11*` sont présentes.
@@ -85,7 +85,7 @@ Un no-go HW en G2 n'annule pas l'APK MVP : seul G4 dépend de G2.
 | Exposition réseau / EOS Android 8.0 (plus de correctifs NVIDIA) | Usage LAN strict : aucun port forwarding, accès distant interdit dans ce périmètre, compte administrateur protégé par mot de passe fort ; réévaluation faite à l'issue de G3 |
 | Encodage HW `mediacodec` fragile selon build ffmpeg | Portes de décision par benchmarks G2 + retour facile au logiciel (réglage par défaut si doute) |
 | Burn-in de sous-titres en HW | Hors objet ; règle d'usage : sous-titres externes |
-| Aucun clavier connecté sur la TV | Clavier BT/USB ou génération de saisies via `adb input text` ; procédure d'activation du mode développeur documentée |
+| Aucun clavier connecté sur la TV | Installation possible via `adb install` en réseau (sans clavier) ou par clé USB + explorateur TV en repli ; génération de saisies via `adb input text` si ADB est actif ; procédure d'activation du mode développeur documentée |
 
 ## 5. Critères de succès
 
