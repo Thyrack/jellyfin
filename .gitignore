@@ -289,4 +289,5 @@ docs/jellyfin-shield/probe-data/*
 !docs/jellyfin-shield/probe-data/.gitkeep
 tools/probe/out/
 tools/probe/build/
+app-probe/.gradle/
 app-probe/local.properties
