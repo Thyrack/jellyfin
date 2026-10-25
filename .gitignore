@@ -282,3 +282,11 @@ mono_crash.*.json
 # Devcontainer temp files
 .devcontainer/devcontainer-lock.json
 dotnet/
+
+# Sondes Jellyfin/Shield : fichiers générés et environnement local
+docs/jellyfin-shield/device.env
+docs/jellyfin-shield/probe-data/*
+!docs/jellyfin-shield/probe-data/.gitkeep
+tools/probe/out/
+tools/probe/build/
+app-probe/local.properties
