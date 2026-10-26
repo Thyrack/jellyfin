@@ -293,3 +293,17 @@ app-probe/.gradle/
 app-probe/local.properties
 app-server/.gradle/
 app-server/local.properties
+
+# Assets embarqués de l'APK serveur : produits par collect-assets.sh, regénérés
+# NB : les patterns globaux `web/` et `[Bb]in/` excluent ces répertoires en amont,
+# il faut donc les re-inclure avant d'exclure leur contenu (sinon les !.gitkeep sont inopérants).
+!app-server/app/src/main/assets/web/
+!app-server/app/src/main/assets/bin/
+app-server/app/src/main/assets/server/*
+!app-server/app/src/main/assets/server/.gitkeep
+app-server/app/src/main/assets/web/*
+!app-server/app/src/main/assets/web/.gitkeep
+app-server/app/src/main/assets/bin/*
+!app-server/app/src/main/assets/bin/.gitkeep
+deployment/apk-android/.env
+deployment/apk-android/assets-logs/
