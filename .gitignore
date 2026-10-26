@@ -291,3 +291,5 @@ tools/probe/out/
 tools/probe/build/
 app-probe/.gradle/
 app-probe/local.properties
+app-server/.gradle/
+app-server/local.properties
