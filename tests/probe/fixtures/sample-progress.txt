@@ -2,3 +2,5 @@ ffmpeg started.
 frame=  30 fps=0.0 q=-1.0 size=   256kB time=00:00:01.00 speed=0.4x
 frame=  60 fps=15.0 q=-1.0 size=   512kB time=00:00:02.00 speed=0.6x
 frame= 120 fps=30.0 q=-1.0 size=  1024kB time=00:00:04.00 speed=1.2x
+frame= 120 fps= 85 q=-0.0 Lsize=N/A time=00:00:03.96 bitrate=N/A speed=2.81x
+frame= 120 fps=0.0 q=-0.0 Lsize=N/A time=00:00:03.96 bitrate=N/A speed=N/A

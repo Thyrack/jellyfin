@@ -66,8 +66,9 @@ main() {
   done
   printf 'variant\tinput\troute\tfps\tspeed\n' > "$tsv"
   if push_variant sw; then
-    run_case sw 'dcpu-enc-cpu' '' 'in_1080_h264.mp4' '-c:v libx264 -preset veryfast'
-    run_case sw 'dcpu-4k-scale' '' 'in_4k_h264.mp4' '-vf scale=1920:1080 -c:v libx264 -preset veryfast'
+    # baseline CPU : encodeur natif mpeg4 (libx264 n'est pas compilé dans la sonde, constat G2 on-device)
+    run_case sw 'dcpu-enc-cpu' '' 'in_1080_h264.mp4' '-c:v mpeg4 -threads 4 -q:v 3'
+    run_case sw 'dcpu-4k-scale' '' 'in_4k_h264.mp4' '-vf scale=1920:1080 -c:v mpeg4 -threads 4 -q:v 3'
   fi
   if push_variant v4l2m2m; then
     run_case v4l2m2m 'dcpu-enc-m2m' '' 'in_1080_h264.mp4' '-c:v h264_v4l2m2m'
@@ -76,13 +77,13 @@ main() {
       run_case v4l2m2m 'hwdec-enc' '-hwaccel v4l2m2m -c:v hevc_v4l2m2m' 'in_1080_hevc.mp4' '-c:v h264_v4l2m2m'
     fi
   fi
-  mediacodec_bench "$tsv"
+  mediacodec_bench "$gen" "$tsv"
   [ -f "$gen/in_1080_hevc.mp4" ] || warn 'input HEVC absent (libx265 introuvable sur hôte) : déposer un HEVC test dans out/bench/in_1080_hevc.mp4 avant de relancer.'
   log "benchmarks : $tsv"
 }
 
-mediacodec_bench() { # marche MediaCodec : exécutée seulement si l'encodeur existe (constat T8 via config.h)
-  local tsv="$1"
+mediacodec_bench() { # mediacodec_bench <gen> <tsv> — marche MediaCodec : exécutée seulement si l'encodeur existe (constat T8 via config.h)
+  local gen="$1" tsv="$2"
   local bin="$PROBE_DIR/out/ffmpeg-mediacodec/ffmpeg"
   if [ ! -x "$bin" ]; then
     warn "mediacodec : binaire absent (build échoué au configure) — constat no-go consigné."
@@ -99,6 +100,15 @@ mediacodec_bench() { # marche MediaCodec : exécutée seulement si l'encodeur ex
     if shell_cmd "/data/local/tmp/jf-ffmpeg-mediacodec -hide_banner -encoders 2>/dev/null" 2>&1 | grep -q h264_mediacodec; then
       run_case mediacodec 'dcpu-enc-mc' '' 'in_1080_h264.mp4' '-c:v h264_mediacodec'
       run_case mediacodec 'dcpu-4k-scale' '' 'in_4k_h264.mp4' '-vf scale=1920:1080 -c:v h264_mediacodec'
+      if [ -f "$gen/in_1080_hevc.mp4" ]; then
+        # route réaliste : décode HW HEVC (mediacodec) + encode HW H.264 (constat G2 : X1 pas d'encode 10-bit HEVC)
+        # garde renforcée : le décodage HW exige hevc_mediacodec EN PLUS de h264_mediacodec (validé ci-dessus)
+        if shell_cmd "/data/local/tmp/jf-ffmpeg-mediacodec -hide_banner -encoders 2>/dev/null" 2>&1 | grep -q hevc_mediacodec; then
+          run_case mediacodec 'hwdec-hwenc' '-c:v hevc_mediacodec' 'in_1080_hevc.mp4' '-c:v h264_mediacodec'
+        else
+          printf 'mediacodec\tconstat\tno-go : hevc_mediacodec absent des encodeurs listés (décodage HW impossible)\t0\t\n' >> "$tsv"
+        fi
+      fi
     else
       printf 'mediacodec\tconstat\tno-go : h264_mediacodec absent des encodeurs listés par le binaire\t0\t\n' >> "$tsv"
     fi

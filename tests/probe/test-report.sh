@@ -4,8 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 fail=0
 t() { local name="$1"; shift; if "$@"; then printf 'PASS : %s\n' "$name"; else printf 'FAIL : %s\n' "$name"; fail=1; fi; }
-# nettoyage garanti : le rapport généré par les tests ne doit pas polluer l'arbre
-trap 'rm -f ../../docs/jellyfin-shield/probe-report.md' EXIT
+# nettoyage : un rapport consolidé préexistant (le committé) est mis de côté au lancement puis
+# RESTAURÉ à la sortie — la suite ne doit jamais détruire le rapport committé. À défaut de rapport
+# préexistant, seul un rapport template généré par les tests (contenant <à compléter>) est supprimé.
+REPORT=../../docs/jellyfin-shield/probe-report.md
+BACKUP=$(mktemp)
+if [ -f "$REPORT" ]; then mv "$REPORT" "$BACKUP"; fi
+trap 'if [ -s "$BACKUP" ]; then mv "$BACKUP" "$REPORT"; elif [ -f "$REPORT" ] && grep -q "<à compléter>" "$REPORT"; then rm -f "$REPORT"; fi; rm -f "$BACKUP"' EXIT
 
 t "rapport à 4 marches" bash -c '
   bash ../../tools/probe/report.sh --force >/dev/null

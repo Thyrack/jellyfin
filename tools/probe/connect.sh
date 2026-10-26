@@ -5,7 +5,7 @@ JF_LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1090,SC1091
 . "$JF_LIB_DIR/lib.sh"
 JF_SHIELD_DIR="$(cd "$PROBE_DIR/../../docs/jellyfin-shield" && pwd)"
-ENV_FILE="$JF_SHIELD_DIR/device.env"
+ENV_FILE="${JF_ENV_FILE:-$JF_SHIELD_DIR/device.env}" # JF_ENV_FILE : override pour les tests (isolation de device.env)
 # priorité à l'environnement : device.env n'est sourcé que si JF_SHIELD_IP n'est pas déjà défini
 if [ -z "${JF_SHIELD_IP:-}" ] && [ -f "$ENV_FILE" ]; then
   # shellcheck disable=SC1090

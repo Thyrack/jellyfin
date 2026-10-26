@@ -7,7 +7,20 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
-    private val TAGS = listOf("libnvmedia.so", "libnvmpeg11.so", "libnvhost.so")
+    // Liste étendue d'après le constat de la sonde G0 on-device (/vendor/etc/public.libraries.txt) :
+    // libnvmedia est le contrôle (non listée), nvtranscode/libnvos sont whitelisted côté vendor.
+    private val TAGS = listOf(
+        "libnvmedia.so",
+        "libnvmpeg11.so",
+        "libnvhost.so",
+        "nvtranscode.so",
+        "libnvos.so",
+        "libnvgr.so",
+        "libnvcpl_vendor.so",
+        "libnvsi_ll_2.so",
+        "libndkbinderutil.so",
+        "libtsec_wrapper.so",
+    )
 
     private external fun dlopenProbe(lib: String): String?
 

@@ -37,19 +37,30 @@ adb_target() {
     || die "$target non détecté ni autorisé (acceptez la boîte de dialogue sur la TV)."
 }
 
-# parse_progress_fps <fichier> — dernière valeur « fps= » d'une sortie ffmpeg -stats ; renvoie '0' si absente
+# parse_progress_fps <fichier> — PIC de « fps= » sur la sortie ffmpeg -stats ; renvoie '0' si absente
+# Constat G2 on-device : MediaCodec émet « fps=0.0 » sur la ligne de fin (drain) — la dernière valeur
+# sous-estime le débit soutenu ; le pic reflète la vitesse de streaming réelle de la chaîne.
 parse_progress_fps() {
   LC_ALL=C awk '{
-    i = match($0, /fps=[0-9]*\.?[0-9]*/)
-    if (i) { v = substr($0, i + 4, RLENGTH - 4); gsub(/\r/, "", v); last = v + 0 }
+    i = match($0, /fps= *[0-9]*\.?[0-9]*/)
+    if (i) {
+      v = substr($0, i + 4, RLENGTH - 4)
+      gsub(/ /, "", v); gsub(/\r/, "", v)
+      if ((v + 0) > (last + 0)) last = v + 0
+    }
   } END { print last + 0 }' "$1"
 }
 
-# parse_progress_speed <fichier> — dernière valeur « speed= » (x retiré) ; renvoie '0' si absente
+# parse_progress_speed <fichier> — PIC des « speed= » numériques (x retiré ; les « speed=N/A » de
+# drain sont ignorés) ; renvoie '0' si absente. Même sémantique pic que parse_progress_fps : la
+# valeur de fin de traitement (drain) sous-estime le débit soutenu ; le pic reflète la vitesse réelle.
 parse_progress_speed() {
   LC_ALL=C awk '{
     i = match($0, /speed=[0-9.]+/)
-    if (i) { v = substr($0, i + 6, RLENGTH - 6); gsub(/[^0-9.]/, "", v); last = v + 0 }
+    if (i) {
+      v = substr($0, i + 6, RLENGTH - 6)
+      if ((v + 0) > (last + 0)) last = v + 0
+    }
   } END { print last + 0 }' "$1"
 }
 

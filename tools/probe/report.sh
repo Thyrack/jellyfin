@@ -32,7 +32,7 @@ main() {
     printf '| Marche : MediaCodec | verdict : <à compléter> | fps : <à compléter> | observations : encodeur h264_mediacodec présent/absent |\n'
     printf '| Marche : NVMedia décodage | verdict : <à compléter> | fps : — | observations : dlopen libnvmpeg11 OK/ÉCHEC |\n'
     printf '| Marche : NVMedia encodage (option G5) | verdict : — | fps : — | observations : chantier séparé (spec G5) |\n'
-    printf '\nGénéré par tools/probe/report.sh — après exécution, les champs <à compléter> sont remplacés à la main avec les mesures.\n'
+    printf '\nGénéré par tools/probe/report.sh — les champs « à compléter » du corps sont remplacés à la main après exécution ; tout « à compléter » résiduel dans le CORPS bloque la régénération.\n'
   } > "$REPORT"
   log "rapport : $REPORT"
 }

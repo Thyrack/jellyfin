@@ -9,7 +9,7 @@ case "$VARIANT" in
   sw)         CFG_EXTRA="" ;;
   v4l2m2m)    CFG_EXTRA="--enable-v4l2-m2m" ;;
   # ffjni requis par le backend MediaCodec (constat de configure du run T8)
-  mediacodec) CFG_EXTRA="--enable-mediacodec --enable-jni" ;;
+  mediacodec) CFG_EXTRA="--enable-mediacodec --enable-jni --enable-decoder=h264_mediacodec,hevc_mediacodec --enable-encoder=h264_mediacodec,hevc_mediacodec" ;;
   nvdec)      CFG_EXTRA="--enable-nvdec" ;;
   *) die "variant inconnu ou absent : '$VARIANT' (attendu : sw | v4l2m2m | mediacodec | nvdec)." ;;
 esac
@@ -43,11 +43,13 @@ cp -f ./ffmpeg "$OUT/ffmpeg"
 log "$VARIANT : $OUT/ffmpeg"
 if [ "$VARIANT" = "mediacodec" ]; then
   {
-    echo "# détection de l'encodeur h264_mediacodec via config.h du build :"
-    if grep -q "CONFIG_H264_MEDIACODEC_ENCODER 1" "$SRC/config.h"; then
+    echo "# détection de l'encodeur h264_mediacodec via config.h / config_components.h du build :"
+    # NB : les macros de codecs vivent dans config_components.h depuis FFmpeg 6 (constat on-device).
+    if grep -q "CONFIG_H264_MEDIACODEC_ENCODER 1" "$SRC/config_components.h" "$SRC/config.h" 2>/dev/null; then
       echo "ENCODEUR PRÉSENT (CONFIG_H264_MEDIACODEC_ENCODER 1)."
+      grep -E "MEDIACODEC_(DECOD|ENCOD)ER 1" "$SRC/config_components.h" 2>/dev/null
     else
-      echo "ABSENT : aucune macro CONFIG_H264_MEDIACODEC_ENCODER=1 dans config.h."
+      echo "ABSENT : aucune macro CONFIG_H264_MEDIACODEC_ENCODER=1 dans config.h ni config_components.h."
     fi
   } > "$OUT/encoders-presence.txt"
   log "presence encodeur : $(tr '\n' ' ' < "$OUT/encoders-presence.txt")"

@@ -10,11 +10,11 @@ t "selftest : 3 lignes" bash -c '
   bash ../../tools/probe/lib.sh --selftest | grep -c "\[selftest\]" | grep -qx "3"'
 t "dry-run sans appareil ni IP : selftest OK" bash -c '
   DRY_RUN=1 bash ../../tools/probe/lib.sh --selftest >/dev/null'
-t "parse_progress_fps sur la fixture renvoie 30" bash -c '
+t "parse_progress_fps sur la fixture renvoie 85 (dernière ligne, format avec espace constat G2)" bash -c '
   source ../../tools/probe/lib.sh >/dev/null
-  parse_progress_fps fixtures/sample-progress.txt | grep -qx "30"'
-t "parse_progress_speed sur la fixture renvoie 1.2" bash -c '
+  parse_progress_fps fixtures/sample-progress.txt | grep -qx "85"'
+t "parse_progress_speed sur la fixture renvoie 2.81" bash -c '
   source ../../tools/probe/lib.sh >/dev/null
-  parse_progress_speed fixtures/sample-progress.txt | grep -qx "1.2"'
+  parse_progress_speed fixtures/sample-progress.txt | grep -qx "2.81"'
 
 exit $fail
