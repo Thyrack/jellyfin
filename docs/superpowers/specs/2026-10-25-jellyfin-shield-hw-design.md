@@ -2,7 +2,7 @@
 
 - **Date** : 2026-10-25
 - **Projet** : exécuter un Jellyfin Server sur NVIDIA Shield Android TV 16 Go (2015/2017, modèle « foster », Tegra X1, Android 8.0) en *serveur local maison*, avec un accès progressif à l'accélération matérielle du Tegra.
-- **Statut** : approuvé par le propriétaire (plan v1) — priorité : sondage puis APK, **sans Termux**. Amendement v1.1 : sondages pilotables sans contact physique (ADB réseau prioritaire, sonde APK en repli).
+- **Statut** : approuvé par le propriétaire (plan v1) — priorité : sondage puis APK, **sans Termux**. Amendement v1.1 : sondages pilotables sans contact physique (ADB réseau prioritaire, sonde APK en repli). Amendement v1.2 (2026-10-25) : sondes G0/G1/G2 exécutées avec succès sur l'appareil (cf. `docs/jellyfin-shield/probe-report.md`) — **G0 PASS** (Android 11/RQ1A.210105.003, RAM 3 016 Mo, 7 libs NVIDIA whitelisted dlopen OK en namespace app), **G1 PASS** (volume `/storage/AX58U` lisible RO, ffprobe OK), **G2 : GO MediaCodec** (encodeur h264_mediacodec actif ; décodage HW HEVC + encodage HW H.264 = 108 fps / 3,55× ; 1080p→H.264 = 116 fps / 3,82× ; V4L2-M2M no-go démontré) ; périmètre G3 confirmé (APK serveur embarqué), HW transcoding profond reporté à G4 (patch C# `HardwareAccelerationType` + `EncodingHelper`).
 
 ---
 
@@ -118,3 +118,14 @@ Un no-go HW en G2 n'annule pas l'APK MVP : seul G4 dépend de G2.
 - Tous les documents et commentaires en **français** (directive globale).
 - Chaque nouvelle classe/méthode est accompagnée de ses tests unitaires ; à l'exécution, charger les skills expert-* pertinentes (expert-bash pour les scripts de sondage `.sh`, expert-devops si CI, expert-tester pour les tests).
 - Projet isolé : branche dédiée `feat/jellyfin-shield-apk` (déjà créée), éventuel worktree si nécessaire.
+
+## 9. Périmètre G3 (plan exécution serveur embarqué — suit les verdicts G0-G2)
+
+Le serveur tourne **dans un APK wrapper** (nouveau module `app-server`, fonds communs avec la sonde `app-probe`) :
+
+- **Publication serveur** : `dotnet publish Jellyfin.Server -f net10.0 -r android-arm64 --self-contained` (binaire + libs extraites des assets vers `filesDir/jf-server/` au premier lancement, `chmod +x`) ; rappel : exécution depuis `filesDir` autorisée sous `targetSdk 26` (W^X ne s'applique pas à `targetSdk<29` sur Android 11).
+- **Bundlings obligatoires** : `jellyfin-web` (dist de la release correspondante) pointé via `--webdir` ; binaires `ffmpeg`/`ffprobe` (builds sonde aarch64) placés dans `filesDir/jf-server/bin/` et référencés au serveur via `--ffmpeg`. Limitation documentée : le build sonde ne contient pas libx264/libx265 → le transcodage **logiciel** x264/x265 du serveur ne fonctionnera pas au MVP ; direct play dominant + transcodage HW (G4) restent la voie.
+- **Service** : foreground service `dataSync` + `START_STICKY` + boot receiver + wake lock + exclusion batterie ; ProcessBuilder avec `DOTNET_*` variables GC durcies ; redémarrage automatique sur sortie du process ; notification avec statut + lien vers `http://<ip>:8096`.
+- **Répertoires serveur** : `--datadir/--configdir/--cachedir/--logdir` sous `filesDir` (confine, lisible) ; bibliothèque pointée manuellement par l'utilisateur vers `/storage/AX58U/...` (RO constatée G1).
+- **Critères de succès G3** : le serveur démarre sur :8096 ; UI web accessible depuis le PC ; bibliothèque scannée (≥ 10 fichiers du volume) ; lecture direct sur le navigateur PC ; survie ≥ 24 h sans kill (log documenté).
+- **Hors périmètre G3** : patchs serveur pour l'enum/le profil « mediacodec » (= G4), explore NVMedia/nvtranscode (= G5), Play Store.
