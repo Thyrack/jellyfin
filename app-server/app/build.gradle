@@ -11,6 +11,12 @@ android {
         targetSdk = 26
         ndk { abiFilters "arm64-v8a" }
     }
+    // Le pattern par défaut ignore les fichiers point (glob « . ») : il exclurait
+    // assets/server/.stamp exigé par ServerService (STAMP_ASSET) ; pattern de
+    // repli identique au défaut privé du glob dotfile (le tampon est conservé).
+    androidResources {
+        ignoreAssetsPattern = "!*.svn:!.git:!.gitignore:!.ds_store:!*.scc:<dir>_*:!CVS:!thumbs.db:!pictdb:!__MACOSX"
+    }
 }
 dependencies {
     implementation "org.apache.commons:commons-compress:1.27.1"

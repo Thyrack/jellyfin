@@ -1,0 +1,40 @@
+package org.jellyfin.shieldserver
+
+import java.io.File
+
+/** Catalogue des assets embarqués et construction de la ligne de commande du serveur. */
+object ServerAssets {
+    fun assetFilenames(): List<String> = listOf(
+        "server/jellyfin-server.tar.xz",
+        "web/jellyfin-web.tar.xz",
+        "bin/ffmpeg.xz",
+        "bin/ffprobe.xz",
+    )
+
+    fun buildArgs(filesDir: File): List<String> = listOf(
+        "--datadir", "${filesDir}/jf-server/data",
+        "--configdir", "${filesDir}/jf-server/config",
+        "--cachedir", "${filesDir}/jf-server/cache",
+        "--logdir", "${filesDir}/jf-server/logs",
+        "--webdir", "${filesDir}/jf-server/web",
+        "--ffmpeg", "${filesDir}/jf-server/bin/ffmpeg",
+    )
+
+    /**
+     * Choix du point d'entrée d'après le contenu réel du bundle extrait.
+     * Priorité 1 : le muxer `dotnet` mergé dans le tar (plan-réplique « hôte mergé » ;
+     * l'apphost `dotnet` provient du dépaquetage termux dotnet-host-10.0, ELF bionic,
+     * le pack NuGet android n'embarquant aucun hôte) appliqué à `jellyfin.dll` ;
+     * priorité 2 : exécutif direct `jellyfin` (apphost dédié, pack android futur).
+     * À défaut, le repli historique `dotnet jellyfin.dll` est renvoyé tel quel :
+     * l'échec d'exec est alors remonté par le service (notifyError).
+     */
+    fun entryCommand(serverDir: File): Pair<String, List<String>> {
+        val dotnet = File(serverDir, "dotnet")
+        val dll = File(serverDir, "jellyfin.dll")
+        if (dotnet.isFile && dotnet.canExecute() && dll.isFile) return dotnet.path to listOf(dll.path)
+        val direct = File(serverDir, "jellyfin")
+        if (direct.isFile && direct.canExecute()) return direct.path to emptyList()
+        return dotnet.path to listOf(dll.path)
+    }
+}

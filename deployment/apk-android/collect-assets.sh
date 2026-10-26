@@ -12,7 +12,7 @@ ASSETS_DIR="$(cd "$DEPLOY_DIR/../../app-server/app/src/main/assets" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 if [ "${DRY_RUN:-1}" -eq 1 ]; then
-  printf '%s\n' '-> publish dotnet en deux étapes (IL linux-arm64 + runtime android-arm64) puis fusion'
+  printf '%s\n' '-> publish dotnet en deux étapes (IL linux-arm64 + runtime android-arm64), fusion + apphost termux dotnet-host-10.0'
   printf '%s\n' "-> npm build jellyfin-web @ ${JF_WEB_TAG:-v12.3}"
   printf '%s\n' '-> copie des binaires sonde (ffmpeg/ffprobe)'
   printf '%s\n' '-> empaquetage + stamp dans app-server/app/src/main/assets'
@@ -76,6 +76,137 @@ for f in "$WORK/server-linux/"*; do
 done
 printf '[merge] total=%s fichiers IL copiés depuis server-linux\n' \
   "$(grep -c '^\[merge\] ' "$MERGE_LOG")" >> "$MERGE_LOG"
+# (D) apphost bionic mergé (plan-réplique) : le pack NuGet android n'embarque
+#     aucun hôte exécutable (muxer/apphost absents, ni libhostfxr — cf. rapport T3) ;
+#     le muxer `dotnet` du paquet Termux dotnet-host-10.0 (ELF bionic, NEEDED
+#     système uniquement) est copié à la racine du bundle, à côté de jellyfin.dll.
+HOST_VER="10.0.13"
+HOST_URLS=(
+  "https://mirror.accum.se/mirror/termux.dev/apt/termux-main/pool/main/d/dotnet-host-10.0/dotnet-host-10.0_${HOST_VER}_aarch64.deb"
+  "https://termux.librehat.com/apt/termux-main/pool/main/d/dotnet-host-10.0/dotnet-host-10.0_${HOST_VER}_aarch64.deb"
+)
+if ! command -v ar >/dev/null 2>&1; then
+  printf 'VERDICT : binutils/ar absent — dépaquetage de l apphost termux impossible — escalade requise\n' >&2
+  exit 1
+fi
+HOST_DEB="$WORK/dotnet-host-10.0_${HOST_VER}_aarch64.deb"
+HOST_MIRROR=""
+for u in "${HOST_URLS[@]}"; do
+  if curl -fL --retry 2 -o "$HOST_DEB" "$u"; then HOST_MIRROR="$u"; break; fi
+  rm -f "$HOST_DEB"
+done
+if [ -z "$HOST_MIRROR" ]; then
+  printf 'VERDICT : téléchargement de l apphost termux impossible (miroirs accum.se et librehat) — escalade requise\n' >&2
+  exit 1
+fi
+mkdir -p "$WORK/hostdata"
+ar p "$HOST_DEB" data.tar.xz > "$WORK/host-data.tar.xz"
+tar -xJf "$WORK/host-data.tar.xz" -C "$WORK/hostdata"
+# NB vérifié sur ce paquet : bin/dotnet est un wrapper shell aux chemins termux
+# (inutilisable tel quel) ; le muxer ELF bionic est la copie libexec ci-dessous
+APPHOST_SRC="$WORK/hostdata/data/data/com.termux/files/usr/lib/dotnet/dotnet"
+if [ ! -f "$APPHOST_SRC" ]; then
+  printf 'VERDICT : muxer ELF introuvable dans le paquet termux (layout changé ?) — escalade requise\n' >&2
+  exit 1
+fi
+cp "$APPHOST_SRC" "$WORK/server/dotnet"
+chmod 744 "$WORK/server/dotnet"
+: > "$LOGS_DIR/host-apphost.log"   # log par run (miroir du pattern merge.log)
+{
+  printf '[host-apphost] miroir=%s\n' "$HOST_MIRROR"
+  printf '[host-apphost] taille=%s octets\n' "$(stat -c %s "$WORK/server/dotnet")"
+  printf '[host-apphost] sha256=%s\n' "$(sha256sum "$WORK/server/dotnet" | cut -d' ' -f1)"
+  printf '[host-apphost] ELF: '
+  file -b "$WORK/server/dotnet"
+  readelf -h "$WORK/server/dotnet" 2>/dev/null | grep -E 'Class:|Machine:'
+  readelf -d "$WORK/server/dotnet" 2>/dev/null | grep NEEDED
+} >> "$LOGS_DIR/host-apphost.log" 2>&1
+if readelf -d "$WORK/server/dotnet" 2>/dev/null | grep NEEDED | grep -qi termux; then
+  printf 'VERDICT : dépendance termux dans NEEDED de l apphost — escalade requise\n' >&2
+  exit 1
+fi
+# (D-bis) libs hôte runtime : le pack NuGet android n'embarque ni libhostfxr ni
+#     libhostpolicy ; ils proviennent de DEUX paquets Termux séparés :
+#     dotnet-hostfxr-10.0 (host/fxr) et dotnet-runtime-10.0 (libhostpolicy) —
+#     version EXACTE alignée au host (10.0.13) exigée au listing des miroirs ;
+#     si absente : journal runtime-listing.log + VERDICT (stop légitime, pas de
+#     contournement par une autre version).
+RT_VER="10.0.13"
+RT_URLS=(
+  "https://mirror.accum.se/mirror/termux.dev/apt/termux-main/pool/main/d/"
+  "https://termux.librehat.com/apt/termux-main/pool/main/d/"
+)
+fetch_termux_deb() {
+  local pkg="$1" extract="$2" ver="$3" base listing cand
+  for base in "${RT_URLS[@]}"; do
+    listing="$(curl -fsS --retry 2 "${base}${pkg}/" 2>/dev/null || true)"
+    if [ -z "$listing" ]; then continue; fi
+    # nom de fichier EXACT version ver (points échappés) ; le « || true » évite
+    # que grep sans match ne tue le script via pipefail avant le VERDICT
+    cand="$(printf '%s\n' "$listing" | grep -oE "${pkg}_${ver//./\\.}_aarch64\\.deb" | head -1 || true)"
+    if [ -z "$cand" ]; then
+      # version exacte absente au listing : journalisé, miroir suivant ;
+      # VERDICT si les deux miroirs l'ignorent (pas de repli d'autre version)
+      printf '[runtime-listing] %s%s : version %s absente\n' "$base" "$pkg/" "$ver" >> "$LOGS_DIR/runtime-listing.log"
+      printf '%s\n' "$listing" >> "$LOGS_DIR/runtime-listing.log"
+      continue
+    fi
+    if curl -fL --retry 2 -o "$WORK/$cand" "${base}${pkg}/${cand}"; then
+      mkdir -p "$extract"
+      ar p "$WORK/$cand" data.tar.xz > "$extract/data.tar.xz"
+      tar -xJf "$extract/data.tar.xz" -C "$extract"
+      FETCHED="$(printf '%s|%s' "${base}${pkg}/" "$cand")"
+      return 0
+    fi
+  done
+  return 1
+}
+: > "$LOGS_DIR/runtime-listing.log"   # listings sans la version exigée (par run)
+if ! fetch_termux_deb "dotnet-hostfxr-10.0" "$WORK/rtdata-fxr" "$RT_VER"; then
+  printf 'VERDICT : deb dotnet-hostfxr-10.0_%s_aarch64 indisponible (version absente au listing — cf. assets-logs/runtime-listing.log — ou miroirs inaccessibles) — escalade requise\n' "$RT_VER" >&2
+  exit 1
+fi
+FXR_MIRROR="${FETCHED%%|*}"; FXR_DEB="${FETCHED##*|}"
+FETCHED=""
+if ! fetch_termux_deb "dotnet-runtime-10.0" "$WORK/rtdata" "$RT_VER"; then
+  printf 'VERDICT : deb dotnet-runtime-10.0_%s_aarch64 indisponible (version absente au listing — cf. assets-logs/runtime-listing.log — ou miroirs inaccessibles) — escalade requise\n' "$RT_VER" >&2
+  exit 1
+fi
+RT_MIRROR="${FETCHED%%|*}"; RT_DEB="${FETCHED##*|}"
+find "$WORK/rtdata-fxr" "$WORK/rtdata" > "$LOGS_DIR/rtextraction.list"   # layout réel journalisé (arborescence complète)
+HOSTFXR_SRC="$(find "$WORK/rtdata-fxr" -type f -name libhostfxr.so | head -1)"
+HOSTPOLICY_SRC="$(find "$WORK/rtdata" -type f -name libhostpolicy.so | head -1)"
+CORECLR_RT_SRC="$(find "$WORK/rtdata" -type f -name libcoreclr.so | head -1)"   # repéré, jamais mergé
+if [ -z "$HOSTFXR_SRC" ] || [ -z "$HOSTPOLICY_SRC" ]; then
+  printf 'VERDICT : libhostfxr.so ou libhostpolicy.so introuvable dans les paquets (layout changé ?) — escalade requise\n' >&2
+  exit 1
+fi
+RT_VERSION="$(basename "$(dirname "$HOSTFXR_SRC")")"   # ex. 10.0.13
+mkdir -p "$WORK/server/host/fxr/$RT_VERSION"
+cp "$HOSTFXR_SRC" "$WORK/server/host/fxr/$RT_VERSION/libhostfxr.so"
+# hostpolicy en self-contained muxé : chargé au niveau du bundle (racine du tar),
+# une copie dans host/fxr serait une ressource redondante — placement unique
+cp "$HOSTPOLICY_SRC" "$WORK/server/libhostpolicy.so"
+# NOT merge des libs framework (CoreCLR etc.) : notre 10.0.14 NuGet reste en place
+: > "$LOGS_DIR/rtfetch.log"   # log par run (miroir du pattern host-apphost.log)
+{
+  printf '[rtfetch] url_hostfxr=%s%s, sha256_deb=%s\n' \
+    "$FXR_MIRROR" "$FXR_DEB" "$(sha256sum "$WORK/$FXR_DEB" | cut -d' ' -f1)"
+  printf '[rtfetch] url_runtime=%s%s, sha256_deb=%s\n' \
+    "$RT_MIRROR" "$RT_DEB" "$(sha256sum "$WORK/$RT_DEB" | cut -d' ' -f1)"
+  printf '[rtfetch] version_fxr=%s\n' "$RT_VERSION"
+  if [ -n "$CORECLR_RT_SRC" ]; then
+    printf '[rtfetch] libcoreclr.so paquet runtime : %s — non mergé (10.0.14 NuGet du bundle conservé)\n' "$CORECLR_RT_SRC"
+  else
+    printf '[rtfetch] libcoreclr.so : absent du paquet runtime — non mergé (10.0.14 NuGet du bundle conservé)\n'
+  fi
+  printf '[rtfetch] libhostfxr.so taille=%s octets, sha256=%s\n' \
+    "$(stat -c %s "$WORK/server/host/fxr/$RT_VERSION/libhostfxr.so")" \
+    "$(sha256sum "$WORK/server/host/fxr/$RT_VERSION/libhostfxr.so" | cut -d' ' -f1)"
+  printf '[rtfetch] libhostpolicy.so taille=%s octets, sha256=%s\n' \
+    "$(stat -c %s "$WORK/server/libhostpolicy.so")" \
+    "$(sha256sum "$WORK/server/libhostpolicy.so" | cut -d' ' -f1)"
+} >> "$LOGS_DIR/rtfetch.log" 2>&1
 # (2) jellyfin-web
 mkdir -p "$WORK/web-src"
 curl -sL "https://github.com/jellyfin/jellyfin-web/archive/refs/tags/${JF_WEB_TAG}.tar.gz" \
