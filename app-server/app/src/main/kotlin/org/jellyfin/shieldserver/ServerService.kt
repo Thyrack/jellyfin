@@ -42,10 +42,21 @@ class ServerService : Service() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:wakelock").apply { acquire() }
         thread {
             try {
+                val stat = android.os.StatFs(filesDir.path)
+                Log.i(TAG, "démarrage : espace libre ${(stat.availableBytes / 1_048_576)} Mo, stamp assets tiroir")
                 ensureExtracted()
-                syncNatives(File(filesDir, "jf-server"))
+                Log.i(TAG, "extraction OK : ${File(filesDir, "jf-server").listFiles()?.size ?: -1} entrées")
+                val dir = File(filesDir, "jf-server")
+                syncNatives(dir)
+                val cibles = dir.listFiles()?.fold("") { acc, f ->
+                    if (f.name.contains("e_sqlite") || f.name.contains("Skia") || f.name.endsWith("dotnet") || f.name.endsWith("jellyfin.dll"))
+                        acc + ";" + f.name + ":" + f.length()
+                    else acc
+                }
+                Log.i(TAG, "syncNatives OK — fichiers clés : $cibles")
                 startProcessLoop()
             } catch (e: Exception) {
+                Log.e(TAG, "échec de démarrage", e)
                 notifyError("démarrage : ${e.javaClass.simpleName} ${e.message ?: ""}")
             }
         }
@@ -86,22 +97,43 @@ class ServerService : Service() {
             target.setExecutable(true, false)
         }
         marker.writeText(wanted)
+        Log.i(TAG, "extraction fresh : ${serverDir.listFiles()?.size ?: 0} entrées, ${serverDir.walkTopDown().count()} fichiers")
     }
 
     /**
-     * Recopie les natives android-arm64 embarquées via jniLibs (extraites par l'installateur
-     * vers le répertoire natif de l'APK) à la racine du bundle serveur : le processus enfant
-     * lancé par ProcessBuilder ne résout pas ses DllImport dans le répertoire natif de l'APK,
-     * alors que CoreCLR sonde le répertoire de l'application (e_sqlite3, SkiaSharp, HarfBuzz).
+     * Extraction des natives embarquées : Android 11 interdit de lister `nativeLibraryDir`
+     * (constat smoke III : listFiles renvoie null), on lit donc directement l'APK (ZipInputStream)
+     * et on copie chacune des extensions point-shared-object du répertoire lib arm64-v8a vers le
+     * répertoire du runtime, à côté de jellyfin.dll (CoreCLR sonde le répertoire de l'application).
      */
     private fun syncNatives(serverDir: File) {
-        val nativeDir = applicationInfo.nativeLibraryDir ?: return
         serverDir.mkdirs()
-        File(nativeDir).listFiles { f -> f.isFile && f.name.endsWith(".so") }?.forEach { so ->
-            val target = File(serverDir, so.name)
-            if (!target.isFile || target.length() != so.length()) {
-                so.inputStream().use { input -> target.outputStream().use { input.copyTo(it) } }
+        var copies = 0
+        java.util.zip.ZipInputStream(File(applicationInfo.sourceDir).inputStream()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (entry.name.startsWith("lib/arm64-v8a/") && entry.name.endsWith(".so")) {
+                    val target = File(serverDir, File(entry.name).name)
+                    target.outputStream().use { zip.copyTo(it) }
+                    Log.i(TAG, "syncNatives copie ${target.name} (${target.length()} o)")
+                    copies++
+                }
+                zip.closeEntry()
             }
+        }
+        Log.i(TAG, "syncNatives : $copies natives copiées depuis l'APK")
+
+        // Substitution crypto : le .so officiel exige une JVM attachée (SIGSEGV sans, constat smoke T5
+        // tombstone) ; stub v2 embarqué : empreintes/HMAC/PBKDF2 via BoringSSL, RNG via /dev/urandom,
+        // échec propre ailleurs.
+        try {
+            val stub = assets.open("cryptostub/libSystem.Security.Cryptography.Native.Android.so")
+            File(serverDir, "libSystem.Security.Cryptography.Native.Android.so").outputStream().use { out ->
+                stub.use { input -> input.copyTo(out) }
+            }
+            Log.i(TAG, "cryptostub v2 déployé : empreintes/HMAC/PBKDF2 via BoringSSL, RNG via /dev/urandom")
+        } catch (e: Exception) {
+            Log.w(TAG, "cryptostub indisponible : ${e.message} — le .so original jettera SIGSEGV au premier usage crypto")
         }
     }
 
@@ -127,6 +159,7 @@ class ServerService : Service() {
             val serverDir = File(filesDir, "jf-server")
             val (executable, preArgs) = ServerAssets.entryCommand(serverDir)
             val args = listOf(executable) + preArgs + ServerAssets.buildArgs(filesDir)
+            Log.i(TAG, "ProcessBuilder : $executable $preArgs")
             val env = serverEnv(serverDir)
             try {
                 process = ProcessBuilder(args).apply {
@@ -136,7 +169,14 @@ class ServerService : Service() {
                 }.start()
                 notifyRunning()
                 val proc = process!!
-                proc.inputStream.bufferedReader().forEachLine { line -> Log.i(TAG, line) }
+                // télémétrie du run : dernières lignes retenues pour un fichier lisible via run-as (diagnostic T5)
+                val sb = StringBuilder()
+                val runLog = File(filesDir, "jf-server/last-run.log")
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    Log.i(TAG, line)
+                    if (sb.length < 12_000) sb.appendLine(line)
+                }
+                runLog.writeText(sb.toString())
                 val exit = proc.waitFor()
                 if (!running) return
                 notifyError("serveur arrêté (exit $exit) — relance dans ${backoffMs / 1000} s")
@@ -149,12 +189,13 @@ class ServerService : Service() {
         }
     }
 
-    /** Environnement imposé au process .NET : plafond GC 512 Mo (RAM 3 Go constatée en G0), globalisation invariante (ICU non embarquée), W^X désactivé (exec d'IL sous Android), racine runtime = bundle (le muxer termux résout host/fxr via DOTNET_ROOT). */
+    /** Environnement imposé au process .NET : plafond GC 512 Mo (RAM 3 Go constatée en G0), globalisation invariante (nom de variable en MAJUSCULES officiel : la forme CamelCase était ignorée par le runtime — constat smoke I), W^X désactivé (exec d'IL sous Android), racine runtime = bundle (le muxer termux résout host/fxr via DOTNET_ROOT), LD_LIBRARY_PATH = bundle (le dlopen bionic des natives P/Invoke — e_sqlite3 etc. — ne cherche PAS le répertoire courant, constat smoke II). */
     private fun serverEnv(serverDir: File): Map<String, String> = mapOf(
         "DOTNET_GCHeapHardLimit" to "536870912",
-        "DOTNET_SystemGlobalizationInvariant" to "1",
+        "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" to "1",
         "DOTNET_EnableWriteXorExecute" to "0",
         "DOTNET_ROOT" to serverDir.path,
+        "LD_LIBRARY_PATH" to serverDir.path,
     )
 
     private fun notifyRunning() {

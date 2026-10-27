@@ -9,7 +9,8 @@ set -euo pipefail
 DEPLOY_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROBE_DIR="$(cd "$DEPLOY_DIR/../../tools/probe" && pwd)"
 ASSETS_DIR="$(cd "$DEPLOY_DIR/../../app-server/app/src/main/assets" && pwd)"
-WORK="$(mktemp -d)"
+mkdir -p "$HOME/.cache"
+WORK="$(mktemp -d "$HOME/.cache/jf-assets-XXXXXX")"   # disque dur : /tmp (tmpfs 5,6 Go) a fait OOM-killer sur le build npm (constat collect3)
 trap 'rm -rf "$WORK"' EXIT
 if [ "${DRY_RUN:-1}" -eq 1 ]; then
   printf '%s\n' '-> publish dotnet en deux étapes (IL linux-arm64 + runtime android-arm64), fusion + apphost termux dotnet-host-10.0'
@@ -38,6 +39,10 @@ MERGE_LOG="$LOGS_DIR/merge.log"
 # (A) publish IL : AspNetCore linux-arm64 (pack existant)
 dotnet publish "$DEPLOY_DIR/../../Jellyfin.Server/Jellyfin.Server.csproj" -c Release \
   -r linux-arm64 --self-contained true -o "$WORK/server-linux"
+[ -d "$WORK/server-linux" ] || {
+  printf 'VERDICT : publish linux-arm64 absent — fusion IL impossible, escalade requise.\n' >&2
+  exit 1
+}
 # (B) publish runtime : projet console minimal car le FrameworkReference Web du
 #     projet réel rend tout publish android-arm64 direct impossible (NETSDK1082)
 dotnet new console -o "$WORK/console" -f net10.0
@@ -61,20 +66,22 @@ fi
 # (C) fusion : tout le contenu runtime android sert de base…
 mkdir -p "$WORK/server"
 cp -a "$WORK/server-android/." "$WORK/server/"
-# …complété par le pur IL de server-linux absent du runtime android
-# (DLL managées + deps/runtimeconfig de l'entry assembly `jellyfin` ;
-# natives linux *.so exclues : incompatibles bionic)
-for f in "$WORK/server-linux/"*; do
-  name="$(basename "$f")"
-  case "$name" in
-    *.dll | *.deps.json | *.runtimeconfig.json) ;;
-    *) continue ;;
+# …complété par le contenu de server-linux absent du runtime android :
+# DLL managées, deps/runtimeconfig de l'entry assembly `jellyfin`,
+# ET répertoires de contenu du serveur (ServerSetupApp/, etc. — constat smoke I :
+# DirectoryNotFoundException sur ServerSetupApp/index.mstemplate.html) ;
+# natives linux *.so exclues : incompatibles bionic.
+while IFS= read -r -d '' f; do
+  rel="${f#"$WORK/server-linux/"}"
+  case "$rel" in
+    *.so) continue ;;                      # natives linux : incompatibles bionic, non copiées
   esac
-  if [ -e "$WORK/server/$name" ]; then continue; fi
-  cp "$f" "$WORK/server/"
-  printf '[merge] %s\n' "$name" >> "$MERGE_LOG"
-done
-printf '[merge] total=%s fichiers IL copiés depuis server-linux\n' \
+  if [ -e "$WORK/server/$rel" ]; then continue; fi
+  mkdir -p "$WORK/server/$(dirname "$rel")"
+  cp "$f" "$WORK/server/$rel"
+  printf '[merge] %s\n' "$rel" >> "$MERGE_LOG"
+done < <(find "$WORK/server-linux" -type f -print0)
+printf '[merge] total=%s fichiers copiés depuis server-linux (IL + contenus)\n' \
   "$(grep -c '^\[merge\] ' "$MERGE_LOG")" >> "$MERGE_LOG"
 # (D) apphost bionic mergé (plan-réplique) : le pack NuGet android n'embarque
 #     aucun hôte exécutable (muxer/apphost absents, ni libhostfxr — cf. rapport T3) ;
