@@ -79,4 +79,9 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   transcodage HW = chantier G4.
 - Crypto : le stub (RNG urandom + hash/HMAC/PBKDF2 via BoringSSL système) couvre MD5/hashs/HMAC/PBKDF2 ;
   AES/X509/RSA/DES → CryptographicException attrapables (clés DataProtection inopérantes, tokens auth à re-créer
-  après redémarrage) ; HTTPS absent au MVP.
+  après redémarrage).
+- TLS sortant : opérationnel depuis le G4-bis — les IL android (pont AndroidCrypto exigeant une JVM, inexistante
+  dans ce process free-running) sont remplacées à chaque démarrage par les IL linux (assets `tlsprovider/`) et
+  un provider natif `CryptoNative_*` maison via BoringSSL système (libcrypto/libssl) ; providers limités au client
+  TLS (pas de HTTPS serveur local, pas de client-cert) ; RSA/ECDSA/DSA/PKCS7/OCSP/ChaCha en échec propre.
+  Canari automatique : cycle « Update Plugins » (~4 s, sans [ERR] manifest). Voir `deployment/apk-android/tlsprovider/`.
