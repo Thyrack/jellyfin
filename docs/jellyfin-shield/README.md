@@ -38,3 +38,45 @@ Plus la mini-sonde APK (Task 5) : `cd app-probe && ./gradlew :app:assembleDebug`
 3. Lancer « Sonde JF Shield » : les résultats dlopen s'affichent à l'écran ; un fichier
    `g0-app-namespace.txt` est écrit dans le dossier externe de l'application ;
    pour le récupérer sur le PC : `adb pull /storage/emulated/0/Android/data/org.jellyfin.shieldprobe/files/g0-app-namespace.txt docs/jellyfin-shield/probe-data/`.
+
+## Serveur embarqué (G3) — « Jellyfin Server Shield »
+
+Le serveur Jellyfin complet (net10.0 android-arm64) tourne dans un APK en foreground service,
+**sans Termux et sans root**.
+
+### Construction et installation (depuis le PC)
+1. Activer le débogage réseau ADB sur la Shield (section ci-dessus, une fois).
+2. Provisionner dotnet 10 :
+   `curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0 --install-dir /home/$USER/tools/dotnet`
+   puis `export DOTNET_ROOT=/home/$USER/tools/dotnet PATH="$DOTNET_ROOT:$PATH"`.
+3. Collecter les assets (publie le serveur, build jellyfin-web, ffmpeg sonde ; le stub crypto est
+   pré-construit et versionné dans `app-server/app/src/main/assets/cryptostub/`, re-buildable via :
+   `ANDROID_NDK_ROOT=… DRY_RUN=0 bash deployment/apk-android/build-cryptostub.sh`) :
+
+       DRY_RUN=0 bash deployment/apk-android/collect-assets.sh
+4. `cd app-server && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :app:assembleDebug`
+5. `export JF_SHIELD_IP=<ip> ; bash tools/probe/connect.sh ; DRY_RUN=0 bash deployment/apk-android/install-server.sh`
+
+### Démarrage SANS télécommande
+- `adb shell am start -n org.jellyfin.shieldserver/.MainActivity` → l'app démarre le service automatiquement.
+- OU ouvrir l'icône « Jellyfin Server Shield » sur la TV (auto-start à l'ouverture).
+- OU redémarrer la TV : le boot receiver relance le service au boot ; le service est
+  START_STICKY (relancé par le système s'il est tué).
+- UI admin : `http://<ip>:8096` depuis le navigateur PC.
+
+### Assistant initial (navigateur PC uniquement)
+1. Compte administrateur ; bibliothèque « Vidéos » pointée sur le volume réseau monté
+   (`/storage/AX58U/TOSHIBA_EXT` constat G1 — lecture RO attendue pour les fichiers média).
+2. Exclusion batterie recommandée : `Paramètres → Apps → Jellyfin Server Shield → Batterie` (aucune restriction).
+
+### Rapport post-24 h (critère de stabilité G3)
+    bash deployment/apk-android/check-stability.sh <fichier-résultats (gitignored)>
+Collecte : app Android vivante (process hôte) + /health ; à lancer le lendemain du
+premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté par le grep).
+
+### Limitations MVP documentées
+- Transcodage logiciel x264/x265 inopérant (ffmpeg de la sonde sans libx264) → direct play dominant ;
+  transcodage HW = chantier G4.
+- Crypto : le stub (RNG urandom + hash/HMAC/PBKDF2 via BoringSSL système) couvre MD5/hashs/HMAC/PBKDF2 ;
+  AES/X509/RSA/DES → CryptographicException attrapables (clés DataProtection inopérantes, tokens auth à re-créer
+  après redémarrage) ; HTTPS absent au MVP.
