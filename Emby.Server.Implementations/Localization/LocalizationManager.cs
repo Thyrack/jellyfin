@@ -95,6 +95,17 @@ namespace Emby.Server.Implementations.Localization
         {
             try
             {
+                // Mode globalization-invariant (runtime Android sans ICU — smoke T5) :
+                // toute culture hors InvariantCulture est interdite et jette CultureNotFoundException.
+                if (string.Equals(
+                        Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"),
+                        "1",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    cultureInfo = CultureInfo.InvariantCulture;
+                    return true;
+                }
+
                 // Resource files use underscores for some variants (e.g. es_419);
                 // CultureInfo only accepts hyphenated BCP-47 codes.
                 cultureInfo = CultureInfo.GetCultureInfo(cultureCode.Replace('_', '-'));
@@ -114,7 +125,15 @@ namespace Emby.Server.Implementations.Localization
                 var uiCulture = configManager.Configuration.UICulture;
                 if (!string.IsNullOrEmpty(uiCulture))
                 {
-                    CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(uiCulture);
+                    // Mode globalization-invariant (runtime Android sans données ICU — smoke T5) :
+                    // InvariantCulture seule ; sinon ParseException lors de l'instanciation.
+                    var invariantMode = string.Equals(
+                        Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"),
+                        "1",
+                        StringComparison.OrdinalIgnoreCase);
+                    CultureInfo.DefaultThreadCurrentUICulture = invariantMode
+                        ? CultureInfo.InvariantCulture
+                        : new CultureInfo(uiCulture);
                 }
             }
         }

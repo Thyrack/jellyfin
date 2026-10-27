@@ -132,19 +132,39 @@ namespace Jellyfin.Server
             services.AddLiveTvServices();
 
             var serverUICulture = _serverConfigurationManager.Configuration.UICulture;
-            if (string.IsNullOrEmpty(serverUICulture))
+            // Mode globalization-invariant (runtime Android sans données ICU — smoke T5) :
+            // seul InvariantCulture est instanciable ; il offre les formats figés attendus ici.
+            var invariantMode = string.Equals(
+                Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+            if (invariantMode)
+            {
+                serverUICulture = string.IsNullOrEmpty(serverUICulture)
+                    ? "en-US"
+                    : serverUICulture;
+                CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
+            }
+            else if (string.IsNullOrEmpty(serverUICulture))
             {
                 serverUICulture = "en-US";
+                CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(serverUICulture);
             }
-
-            CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(serverUICulture);
+            else
+            {
+                CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(serverUICulture);
+            }
 
             services.Configure<RequestLocalizationOptions>(options =>
             {
                 var supportedUICultures = LocalizationManager.GetSupportedUICultures();
                 options.SupportedCultures = supportedUICultures;
                 options.SupportedUICultures = supportedUICultures;
-                options.DefaultRequestCulture = new RequestCulture(serverUICulture);
+                // Mode globalization-invariant (runtime Android sans données ICU — smoke T5) :
+                // seule la culture invariante est instanciable ; formats figés équivalents en-US.
+                options.DefaultRequestCulture = invariantMode
+                    ? new RequestCulture(CultureInfo.InvariantCulture)
+                    : new RequestCulture(serverUICulture);
                 options.ApplyCurrentCultureToResponseHeaders = true;
                 options.FallBackToParentCultures = true;
                 options.FallBackToParentUICultures = true;

@@ -176,8 +176,18 @@ namespace Jellyfin.Server
             try
             {
                 _jellyfinHost = Host.CreateDefaultBuilder()
-                    .UseConsoleLifetime()
-                    .ConfigureServices(services => appHost.Init(services))
+                    .ConfigureServices(services =>
+                    {
+                        // Host de durée de vie : ConsoleLifetime enregistre des signaux Posix non
+                        // supportés par le PAL CoreCLR Android (smoke T5). Sur Android, substitution
+                        // par un lifetime sans signaux ; ailleurs : ConsoleLifetime par défaut.
+                        if (OperatingSystem.IsAndroid())
+                        {
+                            services.AddSingleton<IHostLifetime, AndroidHostLifetime>();
+                        }
+
+                        appHost.Init(services);
+                    })
                     .ConfigureWebHostDefaults(webHostBuilder =>
                     {
                         webHostBuilder.ConfigureWebHostBuilder(appHost, startupConfig, appPaths, _logger);

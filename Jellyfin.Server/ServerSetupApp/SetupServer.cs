@@ -99,10 +99,16 @@ public sealed class SetupServer : IDisposable
         var config = _configurationManager.GetNetworkConfiguration()!;
         _startupServer?.Dispose();
         _startupServer = Host.CreateDefaultBuilder(["hostBuilder:reloadConfigOnChange=false"])
-            .UseConsoleLifetime()
-            .UseSerilog()
             .ConfigureServices(serv =>
             {
+                // Host de durée de vie : le ConsoleLifetime par défaut enregistre des signaux Posix
+                // non supportés par le PAL CoreCLR Android (smoke T5). Sur Android, substitution par
+                // un lifetime sans signaux ; ailleurs : ConsoleLifetime par défaut du CreateDefaultBuilder.
+                if (OperatingSystem.IsAndroid())
+                {
+                    serv.AddSingleton<IHostLifetime, AndroidHostLifetime>();
+                }
+
                 serv.AddSingleton(this);
                 serv.AddHealthChecks()
                     .AddCheck<SetupHealthcheck>("StartupCheck");
@@ -111,6 +117,7 @@ public sealed class SetupServer : IDisposable
                     ApiServiceCollectionExtensions.ConfigureForwardHeaders(config, options);
                 });
             })
+            .UseSerilog()
             .ConfigureWebHostDefaults(webHostBuilder =>
                     {
                         webHostBuilder
