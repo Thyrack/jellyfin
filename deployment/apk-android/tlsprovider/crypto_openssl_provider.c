@@ -587,15 +587,6 @@ static void etat_ctx_retirer(X509_STORE_CTX* ctx)
     pthread_mutex_unlock(&g_mutex_ctx);
 }
 
-/* Pont verify_cb : BoringSSL → callback géré avec appData (miroir pal :
- * le callback géré délivre sa propre passerelle via X509StoreCtxGetAppData). */
-static int pont_verify_cb(int preverify_ok, X509_STORE_CTX* ctx)
-{
-    etat_ctx_t* e = etat_ctx_chercher(ctx);
-    if (e != NULL && e->callback != NULL) return e->callback(preverify_ok, ctx);
-    return preverify_ok;
-}
-
 /* ---------- État SSL_SESSION (C1-revue) ----------
  * Un canal unique par session remplacé par une struct d'état : hostname
  * (strdup, libéré ici) et appData (opaque géré, JAMAIS libéré ici) vivent
