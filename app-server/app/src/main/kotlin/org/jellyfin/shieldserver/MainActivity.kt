@@ -31,6 +31,12 @@ class MainActivity : Activity() {
         root.addView(status); root.addView(start); root.addView(stop); root.addView(admin)
         setContentView(root)
 
+        // Auto-démarrage sans intervention télécommande : l'ouverture de l'app (ou un
+        // `am start-foreground-service` ADB / le boot receiver) suffit à lancer le serveur
+        // (constat smoke T5 : saisie manuelle sur la TV peu pratique sans clavier).
+        startForegroundService(Intent(this, ServerService::class.java))
+        setStatus("démarrage…")
+
         start.setOnClickListener {
             startForegroundService(Intent(this, ServerService::class.java))
             setStatus("démarrage…")
@@ -40,7 +46,6 @@ class MainActivity : Activity() {
             setStatus("Arrêté")
         }
         thread { postMessage(serveurUrl()) }   // lecture réseau IO hors thread UI (revue)
-        setStatus("Arrêté")
     }
 
     override fun onStart() {
