@@ -15,6 +15,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import kotlin.concurrent.thread
 
 /** Service gère l'extraction des assets puis lance le serveur .NET, avec redémarrage en backoff. */
@@ -47,6 +48,14 @@ class ServerService : Service() {
                 ensureExtracted()
                 Log.i(TAG, "extraction OK : ${File(filesDir, "jf-server").listFiles()?.size ?: -1} entrées")
                 val dir = File(filesDir, "jf-server")
+                // TMPDIR : Path.GetTempPath() du géré lit cette var POSIX ; /tmp est read-only
+                // dans le sandbox App Android (constat bibliothèque : IOException « Read-only file
+                // system : '/tmp' » sur le Dynamic Image Provider).
+                val tempDir = serverTempDir(filesDir)
+                if (!tempDir.mkdirs() && !tempDir.isDirectory) {
+                    throw IOException("Création du répertoire temp impossible : ${tempDir.path}")
+                }
+
                 syncNatives(dir)
                 val cibles = dir.listFiles()?.fold("") { acc, f ->
                     if (f.name.contains("e_sqlite") || f.name.contains("Skia") || f.name.endsWith("dotnet") || f.name.endsWith("jellyfin.dll"))
@@ -106,6 +115,9 @@ class ServerService : Service() {
      * et on copie chacune des extensions point-shared-object du répertoire lib arm64-v8a vers le
      * répertoire du runtime, à côté de jellyfin.dll (CoreCLR sonde le répertoire de l'application).
      */
+    /** Répertoire temporaire du serveur : source unique pour la création et TMPDIR (revue). */
+    private fun serverTempDir(filesDir: File): File = File(filesDir, "jf-server/temp")
+
     private fun syncNatives(serverDir: File) {
         serverDir.mkdirs()
         var copies = 0
@@ -189,13 +201,14 @@ class ServerService : Service() {
         }
     }
 
-    /** Environnement imposé au process .NET : plafond GC 512 Mo (RAM 3 Go constatée en G0), globalisation invariante (nom de variable en MAJUSCULES officiel : la forme CamelCase était ignorée par le runtime — constat smoke I), W^X désactivé (exec d'IL sous Android), racine runtime = bundle (le muxer termux résout host/fxr via DOTNET_ROOT), LD_LIBRARY_PATH = bundle (le dlopen bionic des natives P/Invoke — e_sqlite3 etc. — ne cherche PAS le répertoire courant, constat smoke II). */
+    /** Environnement imposé au process .NET : plafond GC 512 Mo (RAM 3 Go constatée en G0), globalisation invariante (nom de variable en MAJUSCULES officiel : la forme CamelCase était ignorée par le runtime — constat smoke I), W^X désactivé (exec d'IL sous Android), racine runtime = bundle (le muxer termux résout host/fxr via DOTNET_ROOT), LD_LIBRARY_PATH = bundle (le dlopen bionic des natives P/Invoke — e_sqlite3 etc. — ne cherche PAS le répertoire courant, constat smoke II), TMPDIR = bundle/temp (le géré lit cette var POSIX ; /tmp read-only dans le sandbox app — constat bibliothèque). */
     private fun serverEnv(serverDir: File): Map<String, String> = mapOf(
         "DOTNET_GCHeapHardLimit" to "536870912",
         "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" to "1",
         "DOTNET_EnableWriteXorExecute" to "0",
         "DOTNET_ROOT" to serverDir.path,
         "LD_LIBRARY_PATH" to serverDir.path,
+        "TMPDIR" to serverTempDir(filesDir).path,
     )
 
     private fun notifyRunning() {
