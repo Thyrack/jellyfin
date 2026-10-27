@@ -22,6 +22,7 @@ import kotlin.concurrent.thread
 class ServerService : Service() {
     private var process: Process? = null
     @Volatile private var running = false
+    private var worker: Thread? = null   // revue : interruptible depuis onDestroy
     private var backoffMs = 5_000L
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -41,7 +42,7 @@ class ServerService : Service() {
         running = true
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:wakelock").apply { acquire() }
-        thread {
+        worker = thread {
             try {
                 val stat = android.os.StatFs(filesDir.path)
                 Log.i(TAG, "démarrage : espace libre ${(stat.availableBytes / 1_048_576)} Mo, stamp assets tiroir")
@@ -57,8 +58,9 @@ class ServerService : Service() {
                 }
 
                 syncNatives(dir)
+                syncTls(dir)
                 val cibles = dir.listFiles()?.fold("") { acc, f ->
-                    if (f.name.contains("e_sqlite") || f.name.contains("Skia") || f.name.endsWith("dotnet") || f.name.endsWith("jellyfin.dll"))
+                    if (f.name.contains("e_sqlite") || f.name.contains("Skia") || f.name.endsWith("dotnet") || f.name.endsWith("jellyfin.dll") || f.name.contains("Cryptography"))
                         acc + ";" + f.name + ":" + f.length()
                     else acc
                 }
@@ -74,6 +76,7 @@ class ServerService : Service() {
 
     override fun onDestroy() {
         running = false
+        worker?.interrupt()   // revue : coupe le backoff/attente du thread worker
         process?.destroy()
         wakeLock?.release()
         super.onDestroy()
@@ -149,6 +152,34 @@ class ServerService : Service() {
         }
     }
 
+    /**
+     * Substitution TLS (G4-bis) : les IL android de System.Security.Cryptography /
+     * System.Net.Security (provider AndroidCrypto sans JVM → Interop.AndroidCrypto.
+     * SslException) sont remplacées par les IL linux du pack runtime, appariées aux
+     * deux providers natifs embarqués (dlopen BoringSSL, cf. tlsprovider/). Appelé
+     * après l'extraction du tar à CHAQUE démarrage (le stamp tar ne change pas —
+     * l'override doit survivre à toute ré-extraction). La comparaison contenu
+     * (diff+copie) vit dans TlsSyncer (M6-revue) : on ne réécrit pas un fichier
+     * déjà identique.
+     */
+    private fun syncTls(serverDir: File) {
+        val duos = ServerAssets.assetFilenames()
+            .filter { it.startsWith("tlsprovider/") }
+            .map { it to it.substringAfterLast('/') }
+        val tlsSyncer = TlsSyncer(
+            source = { nom -> assets.open(nom) },
+            lireCible = { nomCible -> File(serverDir, nomCible).takeIf(File::isFile)?.readBytes() },
+            ecrireCible = { nomCible, contenu -> File(serverDir, nomCible).outputStream().use { it.write(contenu) } },
+        )
+        val remplaces = tlsSyncer.synchroniser(duos) { nom, e ->
+            Log.w(TAG, "syncTls : $nom indisponible : ${e.message}")
+        }
+        remplaces.forEach {
+            Log.i(TAG, "syncTls remplacé : ${it.asset.substringAfterLast('/')} (${it.taille} o)")
+        }
+        Log.i(TAG, "syncTls : ${remplaces.size} fichier(s) TLS remplacé(s)")
+    }
+
     private fun extractTar(stream: java.io.InputStream, targetDir: File) {
         targetDir.mkdirs()
         TarArchiveInputStream(XZCompressorInputStream(stream)).use { tar ->
@@ -192,7 +223,11 @@ class ServerService : Service() {
                 val exit = proc.waitFor()
                 if (!running) return
                 notifyError("serveur arrêté (exit $exit) — relance dans ${backoffMs / 1000} s")
-                Thread.sleep(backoffMs)
+                try {
+                    Thread.sleep(backoffMs)
+                } catch (_: InterruptedException) {
+                    return   // onDestroy : interruption = demande d'arrêt, pas une erreur
+                }
                 if (backoffMs < 60_000L) backoffMs *= 2
             } catch (e: Exception) {
                 notifyError("lancement : ${e.message ?: e.javaClass.simpleName}")

@@ -9,6 +9,13 @@ object ServerAssets {
         "web/jellyfin-web.tar.xz",
         "bin/ffmpeg.xz",
         "bin/ffprobe.xz",
+        // Provider TLS (G4-bis) : IL linux + natives BoringSSL (cf. tlsprovider/)
+        // — le tar contient les IL android (pack runtime android) ; ils sont
+        // appliqués par-dessus à chaque démarrage par syncTls (cf. ServerService).
+        "tlsprovider/System.Security.Cryptography.dll",
+        "tlsprovider/System.Net.Security.dll",
+        "tlsprovider/libSystem.Security.Cryptography.Native.OpenSsl.so",
+        "tlsprovider/libSystem.Net.Security.Native.so",
     )
 
     fun buildArgs(filesDir: File): List<String> = listOf(

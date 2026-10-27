@@ -17,9 +17,17 @@ class ServerAssetsTest {
     private fun nouveauRepertoire(): File =
         createTempDirectory("jf-server-test").toFile().also { tempDir = it }
 
-    @Test fun `les 4 noms d'assets attendus`() {
+    @Test fun `les 8 noms d'assets attendus`() {
         assertEquals(
-            listOf("server/jellyfin-server.tar.xz", "web/jellyfin-web.tar.xz", "bin/ffmpeg.xz", "bin/ffprobe.xz"),
+            listOf(
+                "server/jellyfin-server.tar.xz", "web/jellyfin-web.tar.xz",
+                "bin/ffmpeg.xz", "bin/ffprobe.xz",
+                // Provider TLS G4-bis : IL linux substituées + natives BoringSSL
+                "tlsprovider/System.Security.Cryptography.dll",
+                "tlsprovider/System.Net.Security.dll",
+                "tlsprovider/libSystem.Security.Cryptography.Native.OpenSsl.so",
+                "tlsprovider/libSystem.Net.Security.Native.so"
+            ),
             ServerAssets.assetFilenames())
     }
     @Test fun `les args CLI exacts du serveur`() {
