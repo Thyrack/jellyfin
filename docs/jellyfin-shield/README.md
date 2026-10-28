@@ -108,6 +108,10 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   réduit les cultures supportées à la seule invariante (le header Accept-Language des clients ne peut plus
   poser `fr-FR` sur un thread de requête — cause de `CultureNotFoundException`/ICU4N constatée sur les
   GET /Items). `DefaultThreadCurrentCulture` est aussi posée (le patch initial ne couvrait que l'UI culture).
+- Translitération (tri alphabétique) désactivée sous invariant : le static-ctor d'ICU4N tente
+  `new CultureInfo("en")` (fallback du bundle) — interdit en mode invariant même avec une hygiène culture
+  parfaite (constat 02:0x). `Transliterated` renvoie le texte brut ; les diacritiques restent gérés par
+  `RemoveDiacritics` (chemin indépendant d'ICU4N).
 - Licence du ffmpeg embarqué : **GPLv3** (`--enable-gpl --enable-version3` : x264 GPL, OpenSSL Apache-2.0) —
   usage interne sur le device, pas de redistribution du binaire.
 - ⚠ La ré-extraction du bundle (changement de `server/.stamp`) efface aussi `files/jf-server/logs`

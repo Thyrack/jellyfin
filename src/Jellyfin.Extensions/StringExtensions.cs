@@ -22,8 +22,13 @@ namespace Jellyfin.Extensions
             {
                 return Transliterator.GetInstance(_transliteratorId.Value);
             }
-            catch (ArgumentException)
+            catch (Exception ex) when (ex is ArgumentException or TypeInitializationException)
             {
+                // Runtime Android en globalization-invariant : le static-ctor d'ICU4N tente
+                // new CultureInfo("en") (fallback du bundle) — interdit en mode invariant
+                // (constat 00:49 : CultureNotFoundException mise en cache par le Lazy et
+                // relancée à chaque GetSortName → GET /Items en échec). La translitération
+                // est désactivée : Transliterated renverra le texte brut (repli déjà prévu).
                 return null;
             }
         });
