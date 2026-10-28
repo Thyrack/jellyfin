@@ -104,6 +104,10 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   m3u sont caducs côté fournisseur (403 Amagi constatée depuis n'importe quel client).
 - GC .NET plafonné à 384 Mo = 402653184 octets (constat OOM 20:53 : le killer mémoire Android a tué le process
   dotnet le plus gros RSS ; le serveur est relancé automatiquement par la boucle du service).
+- Cultures requêtes invariantes : en mode globalization-invariant, `RequestLocalizationConfigurator`
+  réduit les cultures supportées à la seule invariante (le header Accept-Language des clients ne peut plus
+  poser `fr-FR` sur un thread de requête — cause de `CultureNotFoundException`/ICU4N constatée sur les
+  GET /Items). `DefaultThreadCurrentCulture` est aussi posée (le patch initial ne couvrait que l'UI culture).
 - Licence du ffmpeg embarqué : **GPLv3** (`--enable-gpl --enable-version3` : x264 GPL, OpenSSL Apache-2.0) —
   usage interne sur le device, pas de redistribution du binaire.
 - ⚠ La ré-extraction du bundle (changement de `server/.stamp`) efface aussi `files/jf-server/logs`

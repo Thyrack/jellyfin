@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -7,7 +6,6 @@ using System.Net.Http.Headers;
 using System.Net.Mime;
 using System.Text;
 using Emby.Server.Implementations.EntryPoints;
-using Emby.Server.Implementations.Localization;
 using Jellyfin.Api.Middleware;
 using Jellyfin.Database.Implementations;
 using Jellyfin.LiveTv.Extensions;
@@ -143,32 +141,10 @@ namespace Jellyfin.Server
                 serverUICulture = string.IsNullOrEmpty(serverUICulture)
                     ? "en-US"
                     : serverUICulture;
-                CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
-            }
-            else if (string.IsNullOrEmpty(serverUICulture))
-            {
-                serverUICulture = "en-US";
-                CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(serverUICulture);
-            }
-            else
-            {
-                CultureInfo.DefaultThreadCurrentUICulture = new CultureInfo(serverUICulture);
             }
 
             services.Configure<RequestLocalizationOptions>(options =>
-            {
-                var supportedUICultures = LocalizationManager.GetSupportedUICultures();
-                options.SupportedCultures = supportedUICultures;
-                options.SupportedUICultures = supportedUICultures;
-                // Mode globalization-invariant (runtime Android sans données ICU — smoke T5) :
-                // seule la culture invariante est instanciable ; formats figés équivalents en-US.
-                options.DefaultRequestCulture = invariantMode
-                    ? new RequestCulture(CultureInfo.InvariantCulture)
-                    : new RequestCulture(serverUICulture);
-                options.ApplyCurrentCultureToResponseHeaders = true;
-                options.FallBackToParentCultures = true;
-                options.FallBackToParentUICultures = true;
-            });
+                RequestLocalizationConfigurator.Configure(options, serverUICulture, invariantMode));
 
             services.AddHostedService<RecordingsHost>();
             services.AddHostedService<AutoDiscoveryHost>();
