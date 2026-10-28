@@ -242,9 +242,9 @@ class ServerService : Service() {
         }
     }
 
-    /** Environnement imposé au process .NET : plafond GC 512 Mo (RAM 3 Go constatée en G0), globalisation invariante (nom de variable en MAJUSCULES officiel : la forme CamelCase était ignorée par le runtime — constat smoke I), W^X désactivé (exec d'IL sous Android), racine runtime = bundle (le muxer termux résout host/fxr via DOTNET_ROOT), LD_LIBRARY_PATH = bundle (le dlopen bionic des natives P/Invoke — e_sqlite3 etc. — ne cherche PAS le répertoire courant, constat smoke II), TMPDIR = bundle/temp (le géré lit cette var POSIX ; /tmp read-only dans le sandbox app — constat bibliothèque). */
+    /** Environnement imposé au process .NET : plafond GC 384 Mo (ramasse moins d'OOM : constat crash 20:53 — le killer mémoire Android a sacrifié le process dotnet le plus gros RSS sur MemFree 55 Mo ; Plex laissé actif par choix utilisateur), globalisation invariante (nom de variable en MAJUSCULES officiel : la forme CamelCase était ignorée par le runtime — constat smoke I), W^X désactivé (exec d'IL sous Android), racine runtime = bundle (le muxer termux résout host/fxr via DOTNET_ROOT), LD_LIBRARY_PATH = bundle (le dlopen bionic des natives P/Invoke — e_sqlite3 etc. — ne cherche PAS le répertoire courant, constat smoke II), TMPDIR = bundle/temp (le géré lit cette var POSIX ; /tmp read-only dans le sandbox app — constat bibliothèque). */
     private fun serverEnv(serverDir: File): Map<String, String> = mapOf(
-        "DOTNET_GCHeapHardLimit" to "536870912",
+        "DOTNET_GCHeapHardLimit" to "402653184",
         "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" to "1",
         "DOTNET_EnableWriteXorExecute" to "0",
         "DOTNET_ROOT" to serverDir.path,
