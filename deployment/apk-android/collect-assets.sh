@@ -226,8 +226,12 @@ mkdir -p "$WORK/bin"
 cp "$PROBE_DIR/out/ffmpeg-mediacodec/ffmpeg" "$WORK/bin"
 cp "$PROBE_DIR/out/ffprobe/ffprobe" "$WORK/bin"
 # (4) empaquetage + assets + stamp
+# Exclusion des archives de liens statiques (*.a : libcoreclr_static le plus gros,
+# libbrotli*, libSystem.*) — artefacts de build jamais chargés au runtime (preuve :
+# NEEDED de libSystem.IO.Compression.Native.so = libz/libm/libdl/libc, brotli
+# statique intégré) ; économie constatée sur le tar : 114,7 → 45,5 Mo compressés.
 mkdir -p "$ASSETS_DIR/server" "$ASSETS_DIR/web" "$ASSETS_DIR/bin"
-tar -C "$WORK/server" -cJf "$ASSETS_DIR/server/jellyfin-server.tar.xz" .
+tar -C "$WORK/server" -cJf "$ASSETS_DIR/server/jellyfin-server.tar.xz" --exclude '*.a' .
 tar -C "$WORK/web-src/dist" -cJf "$ASSETS_DIR/web/jellyfin-web.tar.xz" .
 cp "$WORK/bin/ffmpeg" "$ASSETS_DIR/bin/ffmpeg"; xz -9e -f "$ASSETS_DIR/bin/ffmpeg"
 cp "$WORK/bin/ffprobe" "$ASSETS_DIR/bin/ffprobe"; xz -9e -f "$ASSETS_DIR/bin/ffprobe"
