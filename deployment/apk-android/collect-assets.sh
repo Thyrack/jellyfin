@@ -2,7 +2,7 @@
 # Collecte des assets embarqués de l'APK serveur :
 #   (1) publish dotnet self-contained android-arm64 (dépôt courant),
 #   (2) build jellyfin-web (npm) au tag JF_WEB_TAG,
-#   (3) binaires ffmpeg/ffprobe de la sonde,
+#   (3) binaires ffmpeg/ffprobe du build server-live (tools/probe/build-ffmpeg.sh),
 #   (4) empaquetage tar.xz + stamp dans app-server/app/src/main/assets/.
 # Défaut = dry-run ; un run réel exige DRY_RUN=0 (5-15 min au premier passage) — harmonisé avec le README T6.
 set -euo pipefail
@@ -15,7 +15,7 @@ trap 'rm -rf "$WORK"' EXIT
 if [ "${DRY_RUN:-1}" -eq 1 ]; then
   printf '%s\n' '-> publish dotnet en deux étapes (IL linux-arm64 + runtime android-arm64), fusion + apphost termux dotnet-host-10.0'
   printf '%s\n' "-> npm build jellyfin-web @ ${JF_WEB_TAG:-v12.3}"
-  printf '%s\n' '-> copie des binaires sonde (ffmpeg/ffprobe)'
+  printf '%s\n' '-> copie des binaires ffmpeg/ffprobe du build server-live (réseau+TLS+x264, cf. tools/probe/build-ffmpeg.sh)'
   printf '%s\n' '-> empaquetage + stamp dans app-server/app/src/main/assets'
   exit 0
 fi
@@ -221,10 +221,15 @@ curl -sL "https://github.com/jellyfin/jellyfin-web/archive/refs/tags/${JF_WEB_TA
 ( cd "$WORK/web-src" && npm install > "$LOGS_DIR/npm.log" 2>&1 && npm run build:production > "$LOGS_DIR/npm-build.log" 2>&1 )
 # NB (revue plan) : build:production requiert les devDependencies (webpack/cross-env) → npm install COMPLET ;
 # logs dans $LOGS_DIR : valeur courante (shell ou .env) préservée, défauts appliqués sinon.
-# (3) binaires sonde
+# (3) binaires ffmpeg/ffprobe du build « server-live » (Lot LiveTV) :
+#     réseau https via openssl statique + libx264 (transcodage LiveTV) + h264_mediacodec
+#     (G4). Les binaires sonde (sans réseau) ne servaient qu'aux benchmarks G2.
+#     Pré-requis : bash tools/probe/build-openssl.sh && build-x264.sh && build-ffmpeg.sh server-live
 mkdir -p "$WORK/bin"
-cp "$PROBE_DIR/out/ffmpeg-mediacodec/ffmpeg" "$WORK/bin"
-cp "$PROBE_DIR/out/ffprobe/ffprobe" "$WORK/bin"
+[ -f "$PROBE_DIR/out/ffmpeg-server-live/ffmpeg" ] || { printf '%s\n' 'ffmpeg server-live absent : lancer tools/probe/build-ffmpeg.sh server-live' >&2; exit 1; }
+[ -f "$PROBE_DIR/out/ffmpeg-server-live/ffprobe" ] || { printf '%s\n' 'ffprobe server-live absent : lancer tools/probe/build-ffmpeg.sh server-live' >&2; exit 1; }
+cp "$PROBE_DIR/out/ffmpeg-server-live/ffmpeg" "$WORK/bin"
+cp "$PROBE_DIR/out/ffmpeg-server-live/ffprobe" "$WORK/bin"
 # (4) empaquetage + assets + stamp
 # Exclusion des archives de liens statiques (*.a : libcoreclr_static le plus gros,
 # libbrotli*, libSystem.*) — artefacts de build jamais chargés au runtime (preuve :

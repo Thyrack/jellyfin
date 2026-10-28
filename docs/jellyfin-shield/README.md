@@ -94,8 +94,20 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   par Jellyfin) : jamais la base SQLite (locks SMB non fiables → corruption).
 
 ### Limitations MVP documentées
-- Transcodage logiciel x264/x265 inopérant (ffmpeg de la sonde sans libx264) → direct play dominant ;
-  transcodage HW = chantier G4.
+- ffmpeg embarqué = build « server-live » (Lot LiveTV) : jellyfin-ffmpeg v7.1.3-6 + réseau
+  http/https (openssl statique) + **libx264** (sans ASM NEON : nasm absent du cross — transcodage
+  1080p limité par le CPU Tegra X1) + **h264_mediacodec** enc/dec (présent ; le mapping HW auto
+  dans Jellyfin reste le chantier G4). Pré-requis build : `tools/probe/build-openssl.sh`,
+  `build-x264.sh`, `build-ffmpeg.sh server-live` (pkgconf local `/home/bruno/tools/pkgconf`,
+  cf. scripts). Le ffmpeg « sonde » (sans réseau) ne sert plus qu'aux benchmarks G2.
+- LiveTV/IPTV : les chaînes https fonctionnent (preuve ffprobe on-device) ; certains flux du
+  m3u sont caducs côté fournisseur (403 Amagi constatée depuis n'importe quel client).
+- GC .NET plafonné à 384 Mo = 402653184 octets (constat OOM 20:53 : le killer mémoire Android a tué le process
+  dotnet le plus gros RSS ; le serveur est relancé automatiquement par la boucle du service).
+- Licence du ffmpeg embarqué : **GPLv3** (`--enable-gpl --enable-version3` : x264 GPL, OpenSSL Apache-2.0) —
+  usage interne sur le device, pas de redistribution du binaire.
+- ⚠ La ré-extraction du bundle (changement de `server/.stamp`) efface aussi `files/jf-server/logs`
+  — les journaux précédents disparaissent à chaque changement de stamp.
 - Crypto : le stub (RNG urandom + hash/HMAC/PBKDF2 via BoringSSL système) couvre MD5/hashs/HMAC/PBKDF2 ;
   AES/X509/RSA/DES → CryptographicException attrapables (clés DataProtection inopérantes, tokens auth à re-créer
   après redémarrage).
