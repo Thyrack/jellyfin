@@ -41,6 +41,21 @@ class ServerAssetsTest {
             "--ffmpeg", "/tmp/x/jf-server/bin/ffmpeg"
         ), ServerAssets.buildArgs(dir))
     }
+    @Test fun `les args CLI acceptent le choix datadir externe`() {
+        val dir = File("/tmp/x")
+        val choix = DataDirSelector.Choix(
+            datadir = File("/storage/emulated/0/JellyfinServer/data"),
+            cachedir = File("/storage/emulated/0/JellyfinServer/cache"),
+            externe = true)
+        assertEquals(listOf(
+            "--datadir", "/storage/emulated/0/JellyfinServer/data",
+            "--configdir", "/tmp/x/jf-server/config",
+            "--cachedir", "/storage/emulated/0/JellyfinServer/cache",
+            "--logdir", "/tmp/x/jf-server/logs",
+            "--webdir", "/tmp/x/jf-server/web",
+            "--ffmpeg", "/tmp/x/jf-server/bin/ffmpeg"
+        ), ServerAssets.buildArgs(dir, choix))
+    }
     @Test fun `entrée directe quand l'exécutif jellyfin existe`() {
         val dir = nouveauRepertoire()
         File(dir, "jellyfin").apply { createNewFile(); setExecutable(true) }

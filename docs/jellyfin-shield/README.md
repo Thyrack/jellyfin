@@ -74,6 +74,25 @@ Le serveur Jellyfin complet (net10.0 android-arm64) tourne dans un APK en foregr
 Collecte : app Android vivante (process hôte) + /health ; à lancer le lendemain du
 premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté par le grep).
 
+### Données du serveur : migration vers la partition contenu (82 GiB)
+- La partition interne « contenu » (`/storage/emulated/0`, ~82 GiB libres) héberge
+  `JellyfinServer/` (datadir + cache), libérant la partition app 11 GiB (vérification
+  2 GiB de Jellyfin au boot) et survivant à la désinstallation de l'apk.
+- Migration (service arrêté préalablement) :
+  ```
+  adb shell am force-stop org.jellyfin.shieldserver
+  adb shell am broadcast -a org.jellyfin.shieldserver.COPY_DATA -f 0x01000020
+  ```
+  (budget goAsync ≈ 60 s : sur un support lent, une interception laisse un arbre
+  partiel SANS sentinelle → repli interne sûr, migration à re-tenter.)
+  La copie pose une sentinelle `.migration-ok` à la fin intégrale ; tant que la
+  sentinelle manque, le serveur repart du datadir interne (aucune base neuve à l'aveugle).
+- ⚠ La ré-extraction du bundle (changement de `server/.stamp`) efface `files/jf-server/**`
+  — donc le datadir **interne**. Le datadir externe migré n'est jamais effacé.
+  Pensez à refaire la copie après une ré-extraction si vous repartez de l'interne.
+- L'USB TOSHIBA_EXT (1,8 T, CIFS) reste réservé aux fichiers médias (lecture seule
+  par Jellyfin) : jamais la base SQLite (locks SMB non fiables → corruption).
+
 ### Limitations MVP documentées
 - Transcodage logiciel x264/x265 inopérant (ffmpeg de la sonde sans libx264) → direct play dominant ;
   transcodage HW = chantier G4.

@@ -18,10 +18,16 @@ object ServerAssets {
         "tlsprovider/libSystem.Net.Security.Native.so",
     )
 
-    fun buildArgs(filesDir: File): List<String> = listOf(
-        "--datadir", "${filesDir}/jf-server/data",
+    /**
+     * Ligne d'arguments du serveur : datadir/cachedir choisis par [DataDirSelector]
+     * (externe = partition contenu 82 GiB si la migration est en place — sentinelle
+     * .migration-ok + marqueur jellyfin.db présents —, interne historique sinon) ;
+     * config/logs/web/bin restent sous filesDir (gérés par le bundle).
+     */
+    fun buildArgs(filesDir: File, choix: DataDirSelector.Choix = DataDirSelector.choisir(filesDir)): List<String> = listOf(
+        "--datadir", choix.datadir.path,
         "--configdir", "${filesDir}/jf-server/config",
-        "--cachedir", "${filesDir}/jf-server/cache",
+        "--cachedir", choix.cachedir.path,
         "--logdir", "${filesDir}/jf-server/logs",
         "--webdir", "${filesDir}/jf-server/web",
         "--ffmpeg", "${filesDir}/jf-server/bin/ffmpeg",

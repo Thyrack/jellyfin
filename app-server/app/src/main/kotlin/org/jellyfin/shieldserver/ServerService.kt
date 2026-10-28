@@ -78,6 +78,7 @@ class ServerService : Service() {
         running = false
         worker?.interrupt()   // revue : coupe le backoff/attente du thread worker
         process?.destroy()
+        pidActif = null
         wakeLock?.release()
         super.onDestroy()
     }
@@ -201,7 +202,9 @@ class ServerService : Service() {
         while (running) {
             val serverDir = File(filesDir, "jf-server")
             val (executable, preArgs) = ServerAssets.entryCommand(serverDir)
-            val args = listOf(executable) + preArgs + ServerAssets.buildArgs(filesDir)
+            val choix = DataDirSelector.choisir(filesDir)
+            val args = listOf(executable) + preArgs + ServerAssets.buildArgs(filesDir, choix)
+            Log.i(TAG, "datadir=${choix.datadir.path} (${if (choix.externe) "externe" else "interne"})")
             Log.i(TAG, "ProcessBuilder : $executable $preArgs")
             val env = serverEnv(serverDir)
             try {
@@ -212,6 +215,7 @@ class ServerService : Service() {
                 }.start()
                 notifyRunning()
                 val proc = process!!
+                pidActif = android.os.Process.myPid()
                 // télémétrie du run : dernières lignes retenues pour un fichier lisible via run-as (diagnostic T5)
                 val sb = StringBuilder()
                 val runLog = File(filesDir, "jf-server/last-run.log")
@@ -221,6 +225,7 @@ class ServerService : Service() {
                 }
                 runLog.writeText(sb.toString())
                 val exit = proc.waitFor()
+                pidActif = null
                 if (!running) return
                 notifyError("serveur arrêté (exit $exit) — relance dans ${backoffMs / 1000} s")
                 try {
@@ -230,6 +235,7 @@ class ServerService : Service() {
                 }
                 if (backoffMs < 60_000L) backoffMs *= 2
             } catch (e: Exception) {
+                pidActif = null
                 notifyError("lancement : ${e.message ?: e.javaClass.simpleName}")
                 return
             }
@@ -269,5 +275,7 @@ class ServerService : Service() {
         private const val CHANNEL_ID = "jf-server"
         private const val NOTIF_ID = 1
         const val STAMP_ASSET = "server/.stamp"
+        /** PID du process hôte hébergeant `dotnet` (null = aucun) ; utilisé par le récepteur COPY_DATA comme garde anti copie à chaud (marque de vie posée/retirée au cycle de vie du service, pas d'API système stale). */
+        @Volatile var pidActif: Int? = null
     }
 }
