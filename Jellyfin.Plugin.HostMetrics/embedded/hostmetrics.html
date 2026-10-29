@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<title>Métriques host</title>
+<style>
+  body { font-family: sans-serif; color: inherit; max-width: 720px; margin: 0 auto; }
+  .carte { border: 1px solid rgba(127,127,127,.4); border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .ligne { display: flex; justify-content: space-between; gap: 16px; }
+  .valeur { font-weight: bold; }
+  .chaleur { color: #ff5f5f; }
+  .barre { background: rgba(127,127,127,.25); border-radius: 4px; height: 10px; margin-top: 6px; }
+  .barre > div { background: #00a4dc; height: 10px; border-radius: 4px; width: 0; }
+  .nd { opacity: .5; }
+  h1 { font-size: 1.15em; } h2 { font-size: 1em; margin: 4px 0; }
+</style>
+</head>
+<body>
+<div data-role="page" class="page standalonePage" data-theme="b">
+  <h1></h1>
+  <div class="carte">
+    <div class="ligne"><span data-label="cpu"></span><span class="valeur" id="cpu"></span></div>
+    <div class="barre"><div id="cpu-bar"></div></div>
+    <div class="ligne"><span data-label="ram"></span><span class="valeur" id="ram"></span></div>
+    <div class="barre"><div id="ram-bar"></div></div>
+    <div class="ligne"><span data-label="swap"></span><span class="valeur" id="swap"></span></div>
+    <div class="barre"><div id="swap-bar"></div></div>
+  </div>
+  <div class="carte"><h2 data-label="process"></h2>
+    <div class="ligne"><span data-label="workingset"></span><span class="valeur" id="ws"></span></div>
+    <div class="ligne"><span data-label="heap"></span><span class="valeur" id="heap"></span></div>
+    <div class="ligne"><span data-label="uptimeProcess"></span><span class="valeur" id="upt"></span></div>
+    <div class="ligne"><span data-label="uptimeHost"></span><span class="valeur" id="hostUp"></span></div>
+  </div>
+  <div class="carte"><h2 data-label="thermal"></h2><div id="zones"></div></div>
+  <div class="carte"><h2 data-label="sessions"></h2>
+    <div class="ligne"><span data-label="active"></span><span class="valeur" id="act"></span></div>
+    <div class="ligne"><span data-label="transcodage"></span><span class="valeur" id="tco"></span></div>
+  </div>
+</div>
+<script>
+var MESSAGES = {
+  fr: {
+    titre: "Métriques host",
+    cpu: "CPU global",
+    ram: "RAM host",
+    swap: "Swap",
+    process: "Processus serveur",
+    workingset: "Mémoire (working set)",
+    heap: "Tas GC",
+    uptimeProcess: "Uptime serveur",
+    uptimeHost: "Uptime host",
+    thermal: "Zones thermiques",
+    sessions: "Sessions (300 s)",
+    active: "Active",
+    transcodage: "En transcodage",
+    nd: "n/d"
+  }
+};
+var L = MESSAGES.fr;
+var SEUIL_ARRET_THERMIQUE = 85;
+var INTERVALLE_MS = 3000;
+
+function indisp(v) { return v === null || v === undefined ? L.nd : v; }
+function kib(v) { return v == null ? L.nd : (v / 1024 / 1024).toFixed(1) + " GiB"; }
+function octets(v) { return v == null ? L.nd : (v / 1024 / 1024).toFixed(0) + " Mo"; }
+function pct(p) { return p == null ? L.nd : p.toFixed(1) + " %"; }
+function duree(v) { return v == null ? L.nd : Math.floor(v / 3600) + " h " + Math.round((v % 3600) / 60) + " min"; }
+
+function appliqueLabels() {
+  document.title = L.titre;
+  document.querySelector("h1").textContent = L.titre;
+  document.querySelectorAll("[data-label]").forEach(function (n) {
+    n.textContent = L[n.getAttribute("data-label")] || n.textContent;
+  });
+}
+
+function barre(id, ratio) {
+  var el = document.getElementById(id);
+  if (el) { el.style.width = Math.min(100, Math.max(0, ratio * 100)) + "%"; }
+}
+
+function rendDonnees(d) {
+  document.getElementById("cpu").textContent = pct(d.cpu.percent);
+  barre("cpu-bar", (d.cpu.percent || 0) / 100);
+  var memoireUtilisee = d.memoryTotalKiB && d.memoryAvailableKiB ? d.memoryTotalKiB - d.memoryAvailableKiB : null;
+  document.getElementById("ram").textContent = kib(memoireUtilisee) + " / " + kib(d.memoryTotalKiB);
+  barre("ram-bar", memoireUtilisee && d.memoryTotalKiB ? memoireUtilisee / d.memoryTotalKiB : 0);
+  var swapUtilisee = d.swapTotalKiB && d.swapFreeKiB ? d.swapTotalKiB - d.swapFreeKiB : null;
+  document.getElementById("swap").textContent = kib(swapUtilisee) + " / " + kib(d.swapTotalKiB);
+  barre("swap-bar", swapUtilisee && d.swapTotalKiB ? swapUtilisee / d.swapTotalKiB : 0);
+  document.getElementById("ws").textContent = octets(d.process.workingSetBytes);
+  document.getElementById("heap").textContent = octets(d.process.heapBytes);
+  document.getElementById("upt").textContent = duree(d.process.uptimeSeconds);
+  document.getElementById("hostUp").textContent = duree(d.hostUptimeSeconds);
+  rendZones(d.thermalZones || []);
+  document.getElementById("act").textContent = indisp(d.sessions.active);
+  document.getElementById("tco").textContent = indisp(d.sessions.transcoding);
+}
+
+function rendZones(zones) {
+  var html = "";
+  zones.forEach(function (z) {
+    var classe = z.celsius >= SEUIL_ARRET_THERMIQUE ? "valeur chaleur" : "valeur";
+    html += '<div class="ligne"><span>' + indisp(z.type || z.zone) +
+      '</span><span class="' + classe + '">' + z.celsius.toFixed(1) + " °C</span></div>";
+  });
+  document.getElementById("zones").innerHTML = html || '<span class="nd">' + L.nd + "</span>";
+}
+
+function requete() {
+  var entete = {};
+  var url = "/System/HostMetrics";
+  if (window.ApiClient) {
+    entete.Authorization = "MediaBrowser Token=\"" + ApiClient.accessToken() + "\"";
+    url = ApiClient.serverAddress() + url;
+  }
+  fetch(url, { headers: entete })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { rendDonnees(d); setTimeout(requete, INTERVALLE_MS); })
+    .catch(function () { setTimeout(requete, INTERVALLE_MS); });
+}
+
+appliqueLabels();
+requete();
+</script>
+</body>
+</html>

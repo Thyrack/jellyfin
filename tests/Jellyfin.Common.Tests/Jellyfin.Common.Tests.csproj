@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="../../MediaBrowser.Common/MediaBrowser.Common.csproj" />
     <ProjectReference Include="../../MediaBrowser.Providers/MediaBrowser.Providers.csproj" />
+    <ProjectReference Include="../../Jellyfin.Plugin.HostMetrics/Jellyfin.Plugin.HostMetrics.csproj" />
   </ItemGroup>
 
 </Project>
