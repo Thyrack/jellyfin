@@ -155,7 +155,10 @@ namespace Jellyfin.Server
             services.AddHostedService<UserDataChangeNotifier>();
             services.AddHostedService<RecordingNotifier>();
             services.AddHostedService<DeviceAccessHost>();
-            services.AddHostedService<HostMetricsService>();
+            // Métriques host : enregistrement explicite du type (AddHostedService<T> seul
+            // ne publie pas T) puis hosted via factory sur la même instance, et façade.
+            services.AddSingleton<HostMetricsService>();
+            services.AddHostedService(sp => sp.GetRequiredService<HostMetricsService>());
             services.AddSingleton<IHostMetricsReader, DirectoryHostMetricsReader>();
             services.AddSingleton<IHostMetricsService>(sp => sp.GetRequiredService<HostMetricsService>());
         }
