@@ -23,6 +23,11 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
     public const int SamplingIntervalMilliseconds = 2000;
 
     /// <summary>
+    /// Constante noyau : fréquence (Hz) à laquelle les jiffies sont comptés (Android y compris).
+    /// </summary>
+    private const double JiffyParSeconde = 100.0;
+
+    /// <summary>
     /// Fenêtre en secondes au-delà de laquelle une session n'est plus comptée active.
     /// </summary>
     public const int ActiveSessionWindowSeconds = 300;
@@ -47,6 +52,11 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
     /// </summary>
     private const string CheminLoadAvg = "/proc/loadavg";
 
+    /// <summary>
+    /// Chemin propre pour le processus serveur : lisible partout où /proc/stat est interdit.
+    /// </summary>
+    private const string CheminStatSelf = "/proc/self/stat";
+
     private readonly ILogger<HostMetricsService> _logger;
     private readonly ISessionManager _sessionManager;
     private readonly IHostMetricsReader _reader;
@@ -56,6 +66,21 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
     private HostMetricsInfo _snapshot;
     private CpuSample? _cpuPrecedent;
     private double? _cpuPercent;
+
+    /// <summary>
+    /// Jiffies utime+stime du processus lors de l'échantillon précédent.
+    /// </summary>
+    private long? _cpuProcessJiffiesPrecedent;
+
+    /// <summary>
+    /// Timestamp (Stopwatch) du précédent relevé de jiffies (base du delta).
+    /// </summary>
+    private long? _cpuJiffiesHorodatage;
+
+    /// <summary>
+    /// Pourcentage CPU du processus serveur calculé entre deux échantillons.
+    /// </summary>
+    private double? _cpuProcessPercent;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="HostMetricsService"/> class.
@@ -123,6 +148,7 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
             InstruireUneFois(CheminStat);
             _cpuPercent = null;
             _cpuPrecedent = null;
+            MesurerCpuProcess();
             return;
         }
 
@@ -132,12 +158,66 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
             InstruireUneFois(CheminStat + ":parse");
             _cpuPercent = null;
             _cpuPrecedent = null;
+            MesurerCpuProcess();
             return;
         }
 
         _cpuPercent = CpuMetricsCalculator.ComputePercent(_cpuPrecedent, sample);
         _logger.LogDebug("CPU host échantillonné : {Percent} %", _cpuPercent);
         _cpuPrecedent = sample;
+    }
+
+    private void MesurerCpuProcess()
+    {
+        // Repli : /proc/self/stat est lisible depuis l'application là où /proc/stat est
+        // interdit par SELinux (untrusted_app Android). Le % est celui du processus serveur.
+        var contenu = _reader.ReadAllText(CheminStatSelf);
+        if (contenu is null)
+        {
+            InstruireUneFois(CheminStatSelf);
+            ReinitialiserCpuProcess();
+            return;
+        }
+
+        var jiffies = ProcSelfStatParser.ParseCpuJiffies(contenu);
+        if (jiffies is null)
+        {
+            InstruireUneFois(CheminStatSelf + ":parse");
+            ReinitialiserCpuProcess();
+            return;
+        }
+
+        EchantillonnerCpuProcess(jiffies.Value);
+    }
+
+    private void ReinitialiserCpuProcess()
+    {
+        _cpuProcessJiffiesPrecedent = null;
+        _cpuJiffiesHorodatage = null;
+        _cpuProcessPercent = null;
+    }
+
+    private void EchantillonnerCpuProcess(long jiffies)
+    {
+        var maintenant = Stopwatch.GetTimestamp();
+        if (_cpuProcessJiffiesPrecedent is not long precedent || _cpuJiffiesHorodatage is not long horodatagePrecedent)
+        {
+            _cpuProcessPercent = null;
+        }
+        else
+        {
+            // Δt via Stopwatch : monotone et à haute résolution (DateTime.UtcNow
+            // peut sauter sous Windows et renvoyer 0 s → cpuPercent null à tort).
+            var secondes = (maintenant - horodatagePrecedent) / (double)Stopwatch.Frequency;
+            var deltaJiffies = jiffies - precedent;
+            _cpuProcessPercent = secondes <= 0
+                ? null
+                : Math.Clamp(deltaJiffies / (JiffyParSeconde * secondes) * 100.0, 0.0, 100.0);
+            _logger.LogDebug("CPU process échantillonné : {Percent} %", _cpuProcessPercent);
+        }
+
+        _cpuProcessJiffiesPrecedent = jiffies;
+        _cpuJiffiesHorodatage = maintenant;
     }
 
     private HostMetricsInfo ConstruireSnapshot()
@@ -196,7 +276,9 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
         if (contenu is null)
         {
             InstruireUneFois(CheminUptime);
-            return null;
+            // Repli sans /proc : TickCount64 compte les ms depuis l'amorçage du noyau
+            // (sémantique = uptime du host), lisible sans permission spéciale.
+            return Environment.TickCount64 / 1000.0;
         }
 
         return ProcUptimeParser.ParseUptimeSeconds(contenu);
@@ -212,13 +294,14 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
             {
                 WorkingSetBytes = process.WorkingSet64,
                 HeapBytes = GC.GetGCMemoryInfo().HeapSizeBytes,
+                CpuPercent = _cpuProcessPercent,
                 UptimeSeconds = uptime
             };
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Métriques du processus serveur indisponibles");
-            return new ProcessHostMetricsInfo { WorkingSetBytes = null, HeapBytes = null, UptimeSeconds = null };
+            return new ProcessHostMetricsInfo { WorkingSetBytes = null, HeapBytes = null, CpuPercent = null, UptimeSeconds = null };
         }
     }
 
@@ -289,7 +372,7 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
             MemoryAvailableKiB = null,
             SwapTotalKiB = null,
             SwapFreeKiB = null,
-            Process = new ProcessHostMetricsInfo { WorkingSetBytes = null, HeapBytes = null, UptimeSeconds = null },
+            Process = new ProcessHostMetricsInfo { WorkingSetBytes = null, HeapBytes = null, CpuPercent = null, UptimeSeconds = null },
             HostUptimeSeconds = null,
             ThermalZones = [],
             Sessions = new HostSessionMetricsInfo { Active = 0, Transcoding = 0 }

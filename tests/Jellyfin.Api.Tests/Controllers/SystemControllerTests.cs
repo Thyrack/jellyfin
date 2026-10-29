@@ -40,7 +40,7 @@ public class SystemControllerTests
             MemoryAvailableKiB = 950000,
             SwapTotalKiB = 524200,
             SwapFreeKiB = 410000,
-            Process = new ProcessHostMetricsInfo { WorkingSetBytes = 512000000L, HeapBytes = 210000000L, UptimeSeconds = 885.5 },
+            Process = new ProcessHostMetricsInfo { WorkingSetBytes = 512000000L, HeapBytes = 210000000L, CpuPercent = 12.3, UptimeSeconds = 885.5 },
             HostUptimeSeconds = 1958.2,
             ThermalZones = [new ThermalZoneInfo { Zone = "thermal_zone0", Type = "CPU-therm", Celsius = 57.4 }],
             Sessions = new HostSessionMetricsInfo { Active = 2, Transcoding = 1 }
@@ -57,7 +57,7 @@ public class SystemControllerTests
             MemoryAvailableKiB = null,
             SwapTotalKiB = null,
             SwapFreeKiB = null,
-            Process = new ProcessHostMetricsInfo { WorkingSetBytes = null, HeapBytes = null, UptimeSeconds = null },
+            Process = new ProcessHostMetricsInfo { WorkingSetBytes = null, HeapBytes = null, CpuPercent = null, UptimeSeconds = null },
             HostUptimeSeconds = null,
             ThermalZones = [],
             Sessions = new HostSessionMetricsInfo { Active = 0, Transcoding = 0 }
@@ -106,6 +106,7 @@ public class SystemControllerTests
         Assert.Equal(410000L, dto.SwapFreeKiB);
         Assert.Equal(512000000L, dto.Process.WorkingSetBytes);
         Assert.Equal(210000000L, dto.Process.HeapBytes);
+        Assert.Equal(12.3, dto.Process.CpuPercent);
         Assert.Equal(885.5, dto.Process.UptimeSeconds);
         Assert.Equal(1958.2, dto.HostUptimeSeconds);
         var zone = Assert.Single(dto.ThermalZones);
@@ -137,6 +138,7 @@ public class SystemControllerTests
         Assert.Null(dto.SwapFreeKiB);
         Assert.Null(dto.Process.WorkingSetBytes);
         Assert.Null(dto.Process.HeapBytes);
+        Assert.Null(dto.Process.CpuPercent);
         Assert.Null(dto.Process.UptimeSeconds);
         Assert.Null(dto.HostUptimeSeconds);
         Assert.Empty(dto.ThermalZones);

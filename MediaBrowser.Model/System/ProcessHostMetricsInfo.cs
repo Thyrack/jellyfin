@@ -16,6 +16,12 @@ public record ProcessHostMetricsInfo
     public required long? HeapBytes { get; init; }
 
     /// <summary>
+    /// Gets le pourcentage d'occupation CPU du processus serveur (repli Android :
+    /// SELinux bloque la lecture du CPU global via /proc/stat).
+    /// </summary>
+    public required double? CpuPercent { get; init; }
+
+    /// <summary>
     /// Gets la durée de vie du processus serveur en secondes.
     /// </summary>
     public required double? UptimeSeconds { get; init; }

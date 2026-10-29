@@ -46,13 +46,14 @@ Le stockage est déjà couvert par l'endpoint existant `GET /System/Info/Storage
 
 ### 3.2 Échantillonnage procfs (linux/Android)
 
-- **CPU %** : lecture `/proc/stat`, ligne `cpu  ` → `user nice system idle iowait irq softirq steal guest...` (`guest` inclus dans `user`, compteur noyau). Delta entre 2 échantillons consécutifs : `total = somme(user..steal)` ; `busy = total - idle - iowait` ; `pct = busyΔ/totalΔ*100` (0 si delta total nul). `coreCount` provient de `Environment.ProcessorCount`.
+- **CPU %** : lecture `/proc/stat`, ligne `cpu  ` → `user nice system idle iowait irq softirq steal guest...` (`guest` inclus dans `user`, compteur noyau). Delta entre 2 échantillons consécutifs : `total = somme(user..steal)` ; `busy = total - idle - iowait` ; `pct = busyΔ/totalΔ*100` (0 si delta total nul). `coreCount` provient de `Environment.ProcessorCount`. **Amendement 2026-10-29 b** — preuve on-device : SELinux (`untrusted_app`) refuse `/proc/stat`, `/proc/loadavg` et `/proc/uptime` aux apps tierces (Permission denied ; `/proc/meminfo` largué par la whitelist). Repli CPU : `/proc/self/stat` (jiffies `utime+stime` du process serveur, champ 14+15, `comm` avec espaces géré via découpage après la dernière parenthèse ; delta entre échantillons ÷ `USER_HZ=100 × Δt`, clamp [0,100]) → champ **séparé** `process.cpuPercent` (le `cpu.percent` global reste null quand indisponible — pas de mensonge sémantique).
 - **RAM** : `/proc/meminfo` → `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` (KiB). Champs absents → null.
-- **Uptime / loadavg** : `/proc/uptime` (s), `/proc/loadavg` (`load1 load5 <runnable>…`).
+- **Uptime / loadavg** : `/proc/uptime` (s), `/proc/loadavg` (`load1 load5 <runnable>…`). **Amendement 2026-10-29 b** — `/proc/uptime` interdit sur Android : repli `Environment.TickCount64 / 1000` (ms depuis amorçage noyau = uptime host, lisible sans permission). `load1/load5` restent null sur Android (aucune alternative lisible).
 - **Thermique** : glob `/sys/class/thermal/thermal_zone*/` → `type` (chaîne) + `temp` (millidegrés) → `celsius`. Zone illisible → ignorée (log WARN unique). Seuil d'alerte UI fixe : 85 °C.
-- **Process** : `Process.GetCurrentProcess()` (`WorkingSet64`, `PrivateMemorySize64`), `GC.GetGCMemoryInfo().HeapSizeBytes`, `Environment.TickCount64` pour l'uptime process.
+- **Process** : `Process.GetCurrentProcess()` (`WorkingSet64`, `PrivateMemorySize64`), `GC.GetGCMemoryInfo().HeapSizeBytes`, `Environment.TickCount64` pour l'uptime process, et `%` CPU process (jiffies `/proc/self/stat`, amendement b).
 - **Sessions** : `ISessionManager.Sessions` → `active` = sessions dont `LastActivityDate` date de moins de 300 s (constante `ActiveSessionWindowSeconds = 300`, sémantique alignée sur le filtrage `activeWithinSeconds` existant) ; `transcoding` = `TranscodingInfo != null`. Définition simple, sans requête supplémentaire.
 - Aucune accumulation : chaque lecture stocke valeur + valeur précédente (struct privée) ; pas d'historique (YAGNI).
+- Les replis de l'amendement b sont **universels** (pas de branche `IsAndroid`) : sur Linux de bureau `/proc/stat` est toujours lisible, le repli n'y est donc jamais déclenché — chemin de code unique, testable via reader in-memory.
 
 ### 3.3 Endpoint & payload
 
@@ -64,21 +65,22 @@ Le stockage est déjà couvert par l'endpoint existant `GET /System/Info/Storage
   "cpu": { "percent": 34.5, "coreCount": 8, "load1": 1.2, "load5": 0.9 },
   "memoryTotalKiB": 2480008, "memoryAvailableKiB": 950000,
   "swapTotalKiB": 524200, "swapFreeKiB": 410000,
-  "process": { "workingSetBytes": 512000000, "heapBytes": 210000000, "uptimeSeconds": 885 },
+  "process": { "workingSetBytes": 512000000, "heapBytes": 210000000, "cpuPercent": 12.3, "uptimeSeconds": 885 },
   "hostUptimeSeconds": 1958,
   "thermalZones": [ { "zone": "thermal_zone0", "type": "CPU-therm", "celsius": 57.4 } ],
   "sessions": { "active": 2, "transcoding": 1 }
 }
 ```
 
-- `cpu.percent` null tant que 2 échantillons ne sont pas accumulés (premiers appels après démarrage).
+- `cpu.percent` null tant que 2 échantillons ne sont pas accumulés (premiers appels après démarrage) ; et durablement null sur Android (SELinux) — dans ce cas la page montre le CPU du process serveur via `process.cpuPercent` (n/d tant que 2 échantillons ne sont pas accumulés).
 - Windows / `/proc` indisponible → champs null, code toujours 200.
+- **Amendement 2026-10-29 b** : `process.cpuPercent` = % CPU du processus serveur (jiffies `/proc/self/stat`), `hostUptimeSeconds` replié sur `TickCount64` quand `/proc/uptime` est interdit.
 
 ### 3.4 Plugin d'affichage (`Jellyfin.Plugin.HostMetrics`)
 
 - Nouveau projet dans la solution : `Jellyfin.Plugin.HostMetrics.csproj`, références : `MediaBrowser.Common` uniquement. `HostMetricsPlugin : IPlugin, IHasWebPages` (`GetPages()` retourne une `PluginPageInfo`).
 - Page : HTML/JS vanilla embarqué (resource intégrée), auth évoluanble : **Amendement 2026-10-29** — priorité `window.ApiClient` du shell, repli sur la credence legacy `localStorage["jellyfin_credentials"]` (le token du shell n'était pas attaché avant le script de la page), état d'authentification affiché (ligne « État »), poll 3 s resilient.
-- Contenu : jauge CPU %, barre RAM (utilisé/disponible) + swap, cartes RAM process (working set, heap GC, uptime serveur), uptime host, liste zones thermiques (rouge ≥ 85 °C), compteurs sessions actives / transcodage.
+- Contenu : jauge CPU %, barre RAM (utilisé/disponible) + swap, cartes RAM process (working set, heap GC, CPU serveur [amendement b], uptime serveur), uptime host, liste zones thermiques (rouge ≥ 85 °C), compteurs sessions actives / transcodage.
 - Libellés externalisés dans un unique objet `MESSAGES` du fichier (baseline i18n fonctionnelle, un seul fichier de langue initial = fr).
 - Accès garanti : `configurationpage?name=HostMetrics`. `EnableInMainMenu`, `MenuSection`, `MenuIcon` remplis pour l'intégration menu opportuniste (le listing menu dépend du web ; l'URL directe est garantie par le contrôleur DashboardController).
 - Aucune configuration persistante (aucune implémentation de `IPluginServiceRegistrator`) — KISS.

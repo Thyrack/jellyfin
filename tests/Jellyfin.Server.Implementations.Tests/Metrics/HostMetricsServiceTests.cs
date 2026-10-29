@@ -99,14 +99,66 @@ public class HostMetricsServiceTests
     }
 
     [Fact]
-    public void FichierIllisible_ChampsNullSansException()
+    public void FichierIllisible_ChampsNullUptimeRepliSansException()
     {
         var service = CreerService(FakeReader.Vide());
         service.SampleOnce();
         var snap = service.GetSnapshot();
         Assert.Null(snap.MemoryTotalKiB);
-        Assert.Null(snap.HostUptimeSeconds);
         Assert.Null(snap.Cpu.Load1);
+        // Repli uptime : TickCount64 remplace /proc/uptime interdit.
+        Assert.NotNull(snap.HostUptimeSeconds);
+        var attendu = Environment.TickCount64 / 1000.0;
+        Assert.InRange(snap.HostUptimeSeconds!.Value, attendu - 2, attendu + 2);
+    }
+
+    [Fact]
+    public void CpuProcessPremierEchantillon_Null()
+    {
+        var reader = FakeReader.Vide();
+        reader.Fichiers["/proc/self/stat"] = "1369 (dotnet) S 1 2 3 4 5 6 7 8 9 0 40 0 0 0 20 0 1 0 666 1 2\n";
+        var service = CreerService(reader);
+        service.SampleOnce();
+        var snap = service.GetSnapshot();
+        Assert.Null(snap.Cpu.Percent);
+        Assert.Null(snap.Process.CpuPercent);
+    }
+
+    [Fact]
+    public void CpuProcessRepli_JiffiesStables_PourcentZero()
+    {
+        var contenu = "1369 (dotnet) S 1 2 3 4 5 6 7 8 9 0 40 0 0 0 20 0 1 0 666 1 2\n";
+        var reader = FakeReader.Vide();
+        reader.Fichiers["/proc/self/stat"] = contenu;
+        var service = CreerService(reader);
+        service.SampleOnce();
+        service.SampleOnce();
+        var snap = service.GetSnapshot();
+        Assert.Null(snap.Cpu.Percent);
+        Assert.Equal(0.0, snap.Process.CpuPercent!.Value, 6);
+    }
+
+    [Fact]
+    public void RepliCpuProcess_JiffiesRegressent_ClampZero()
+    {
+        var reader = FakeReader.Vide();
+        reader.Fichiers["/proc/self/stat"] = "1369 (dotnet) S 1 2 3 4 5 6 7 8 9 0 40 0 0 0 20 0 1 0 666 1 2\n";
+        var service = CreerService(reader);
+        service.SampleOnce();
+        reader.Fichiers["/proc/self/stat"] = "1369 (dotnet) S 1 2 3 4 5 6 7 8 9 0 4 0 0 0 20 0 1 0 666 1 2\n";
+        service.SampleOnce();
+        Assert.Equal(0.0, service.GetSnapshot().Process.CpuPercent!.Value, 6);
+    }
+
+    [Fact]
+    public void StatSelfMalforme_CpuProcessNullSansException()
+    {
+        var reader = FakeReader.Vide();
+        reader.Fichiers["/proc/self/stat"] = "1369 (dotnet) S 1\n";
+        var service = CreerService(reader);
+        service.SampleOnce();
+        service.SampleOnce();
+        Assert.Null(service.GetSnapshot().Process.CpuPercent);
     }
 
     [Fact]
@@ -124,9 +176,9 @@ public class HostMetricsServiceTests
         => Assert.Equal(300, HostMetricsService.ActiveSessionWindowSeconds);
 
     [Fact]
-    public void WarnUnique_ApresTroisEchantillonnages_ToutesSourcesPerdues_QuatreWarnings()
+    public void WarnUnique_ApresTroisEchantillonnages_ToutesSourcesPerdues_CinqWarnings()
     {
-        // 4 sources fixe : /proc/stat, /proc/meminfo, /proc/uptime, /proc/loadavg (thermal sans zone)
+        // 5 sources fixe : /proc/stat, /proc/meminfo, /proc/uptime, /proc/loadavg, /proc/self/stat (thermal sans zone)
         var logger = new Mock<ILogger<HostMetricsService>>();
         var service = new HostMetricsService(logger.Object, new Mock<ISessionManager>().Object, FakeReader.Vide());
         service.SampleOnce();
@@ -139,7 +191,7 @@ public class HostMetricsServiceTests
                 It.Is<It.IsAnyType>((_, _) => true),
                 It.IsAny<Exception?>(),
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Exactly(4));
+            Times.Exactly(5));
     }
 
     private static HostMetricsService CreerService(

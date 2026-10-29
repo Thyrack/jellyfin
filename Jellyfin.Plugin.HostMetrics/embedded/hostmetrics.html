@@ -34,6 +34,7 @@
   <div class="carte"><h2 data-label="process"></h2>
     <div class="ligne"><span data-label="workingset"></span><span class="valeur" id="ws"></span></div>
     <div class="ligne"><span data-label="heap"></span><span class="valeur" id="heap"></span></div>
+    <div class="ligne"><span data-label="cpuServeur"></span><span class="valeur" id="cpuServeur"></span></div>
     <div class="ligne"><span data-label="uptimeProcess"></span><span class="valeur" id="upt"></span></div>
     <div class="ligne"><span data-label="uptimeHost"></span><span class="valeur" id="hostUp"></span></div>
   </div>
@@ -53,6 +54,7 @@ var MESSAGES = {
     process: "Processus serveur",
     workingset: "Mémoire (working set)",
     heap: "Tas GC",
+    cpuServeur: "CPU serveur",
     uptimeProcess: "Uptime serveur",
     uptimeHost: "Uptime host",
     thermal: "Zones thermiques",
@@ -99,6 +101,7 @@ function barre(id, ratio) {
 function rendDonnees(d) {
   // Le serveur sérialise par défaut en PascalCase (JsonDefaults.PascalCaseOptions).
   document.getElementById("cpu").textContent = pct(d.Cpu.Percent);
+  document.getElementById("cpuServeur").textContent = pct(d.Process.CpuPercent);
   barre("cpu-bar", (d.Cpu.Percent || 0) / 100);
   var memoireUtilisee = d.MemoryTotalKiB && d.MemoryAvailableKiB ? d.MemoryTotalKiB - d.MemoryAvailableKiB : null;
   document.getElementById("ram").textContent = kib(memoireUtilisee) + " / " + kib(d.MemoryTotalKiB);

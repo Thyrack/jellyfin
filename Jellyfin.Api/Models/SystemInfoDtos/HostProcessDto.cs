@@ -18,6 +18,11 @@ public record HostProcessDto
     public required long? HeapBytes { get; init; }
 
     /// <summary>
+    /// Gets le pourcentage CPU du processus serveur (repli quand le CPU global est inaccessible).
+    /// </summary>
+    public required double? CpuPercent { get; init; }
+
+    /// <summary>
     /// Gets l'uptime du processus en secondes.
     /// </summary>
     public required double? UptimeSeconds { get; init; }
@@ -28,6 +33,7 @@ public record HostProcessDto
         {
             WorkingSetBytes = model.WorkingSetBytes,
             HeapBytes = model.HeapBytes,
+            CpuPercent = model.CpuPercent,
             UptimeSeconds = model.UptimeSeconds
         };
     }

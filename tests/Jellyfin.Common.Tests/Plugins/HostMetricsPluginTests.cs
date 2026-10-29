@@ -42,6 +42,7 @@ public class HostMetricsPluginTests
         Assert.Contains("MESSAGES", html, StringComparison.Ordinal);
         Assert.Contains("jellyfin_credentials", html, StringComparison.Ordinal);
         Assert.Contains("d.Cpu.Percent", html, StringComparison.Ordinal);
+        Assert.Contains("d.Process.CpuPercent", html, StringComparison.Ordinal);
     }
 
     [Fact]
