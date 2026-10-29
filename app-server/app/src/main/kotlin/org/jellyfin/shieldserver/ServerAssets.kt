@@ -16,6 +16,8 @@ object ServerAssets {
         "tlsprovider/System.Net.Security.dll",
         "tlsprovider/libSystem.Security.Cryptography.Native.OpenSsl.so",
         "tlsprovider/libSystem.Net.Security.Native.so",
+        // Plugin page de configuration « Métriques host » (déployé dans datadir/plugins/HostMetrics)
+        "plugin/hostmetrics-plugin.tar.xz",
     )
 
     /**

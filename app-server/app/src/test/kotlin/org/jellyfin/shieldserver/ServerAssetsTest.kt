@@ -17,7 +17,7 @@ class ServerAssetsTest {
     private fun nouveauRepertoire(): File =
         createTempDirectory("jf-server-test").toFile().also { tempDir = it }
 
-    @Test fun `les 8 noms d'assets attendus`() {
+    @Test fun `les 9 noms d'assets attendus`() {
         assertEquals(
             listOf(
                 "server/jellyfin-server.tar.xz", "web/jellyfin-web.tar.xz",
@@ -26,7 +26,9 @@ class ServerAssetsTest {
                 "tlsprovider/System.Security.Cryptography.dll",
                 "tlsprovider/System.Net.Security.dll",
                 "tlsprovider/libSystem.Security.Cryptography.Native.OpenSsl.so",
-                "tlsprovider/libSystem.Net.Security.Native.so"
+                "tlsprovider/libSystem.Net.Security.Native.so",
+                // Plugin page de configuration « Métriques host »
+                "plugin/hostmetrics-plugin.tar.xz"
             ),
             ServerAssets.assetFilenames())
     }

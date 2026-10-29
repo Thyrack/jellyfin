@@ -59,6 +59,7 @@ class ServerService : Service() {
 
                 syncNatives(dir)
                 syncTls(dir)
+                syncPlugin(DataDirSelector.choisir(filesDir).datadir)
                 val cibles = dir.listFiles()?.fold("") { acc, f ->
                     if (f.name.contains("e_sqlite") || f.name.contains("Skia") || f.name.endsWith("dotnet") || f.name.endsWith("jellyfin.dll") || f.name.contains("Cryptography"))
                         acc + ";" + f.name + ":" + f.length()
@@ -179,6 +180,37 @@ class ServerService : Service() {
             Log.i(TAG, "syncTls remplacé : ${it.asset.substringAfterLast('/')} (${it.taille} o)")
         }
         Log.i(TAG, "syncTls : ${remplaces.size} fichier(s) TLS remplacé(s)")
+    }
+
+    /**
+     * Diffusion plugin (métriques host) : décompresse l'asset XZ embarqué et compare
+     * byte-à-byte chaque entrée avec la cible <datadir>/plugins/HostMetrics/ ; réécrit
+     * si le contenu diffère. Fail-open (motif TlsSyncer) : un asset indisponible n'empêche
+     * jamais le démarrage du serveur.
+     */
+    private fun syncPlugin(datadir: File) {
+        val pluginDir = File(datadir, "plugins/HostMetrics").apply { mkdirs() }
+        try {
+            assets.open("plugin/hostmetrics-plugin.tar.xz").use { flux ->
+                TarArchiveInputStream(XZCompressorInputStream(flux)).use { tar ->
+                    var ecrits = 0
+                    while (true) {
+                        val entry = tar.nextTarEntry ?: break
+                        if (entry.isDirectory) continue
+                        val cible = File(pluginDir, entry.name)
+                        cible.parentFile?.mkdirs()
+                        val contenu = tar.readBytes()
+                        if (!cible.isFile || !cible.readBytes().contentEquals(contenu)) {
+                            cible.outputStream().use { it.write(contenu) }
+                            ecrits++
+                        }
+                    }
+                    Log.i(TAG, "syncPlugin : $ecrits fichier(s) synchronisés dans ${pluginDir.path}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "syncPlugin : plugin métriques indisponible : ${e.message}")
+        }
     }
 
     private fun extractTar(stream: java.io.InputStream, targetDir: File) {

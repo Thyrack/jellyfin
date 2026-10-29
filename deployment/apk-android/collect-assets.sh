@@ -17,6 +17,7 @@ if [ "${DRY_RUN:-1}" -eq 1 ]; then
   printf '%s\n' "-> npm build jellyfin-web @ ${JF_WEB_TAG:-v12.3}"
   printf '%s\n' '-> copie des binaires ffmpeg/ffprobe du build server-live (réseau+TLS+x264, cf. tools/probe/build-ffmpeg.sh)'
   printf '%s\n' '-> empaquetage + stamp dans app-server/app/src/main/assets'
+  printf '%s\n' '-> publish du plugin page host-metrics (IL net10.0, tar.xz assets/plugin)'
   exit 0
 fi
 # (0) .env optionnel : variables par défaut surchargées par l'environnement du shell
@@ -242,3 +243,27 @@ cp "$WORK/bin/ffmpeg" "$ASSETS_DIR/bin/ffmpeg"; xz -9e -f "$ASSETS_DIR/bin/ffmpe
 cp "$WORK/bin/ffprobe" "$ASSETS_DIR/bin/ffprobe"; xz -9e -f "$ASSETS_DIR/bin/ffprobe"
 sha256sum "$ASSETS_DIR/server/jellyfin-server.tar.xz" | cut -c1-16 > "$ASSETS_DIR/server/.stamp"
 printf '[serveur] stamp=%s, tar.xz=%s octets\n' "$(cat "$ASSETS_DIR/server/.stamp")" "$(stat -c %s "$ASSETS_DIR/server/jellyfin-server.tar.xz")"
+# (5) plugin page de configuration « Métriques host » : publish IL pur net10.0,
+#     renommé HostMetrics.dll + manifeste meta.json aligné sur la version serveur
+SERVER_VERSION="$(grep -oPm1 'Version\("\K[0-9.]+' SharedVersion.cs)"
+TARGET_ABI="${SERVER_VERSION%.*}"
+PLUGIN_NAME="Jellyfin.Plugin.HostMetrics"
+mkdir -p "$WORK/plugin"
+dotnet publish "$DEPLOY_DIR/../../$PLUGIN_NAME/$PLUGIN_NAME.csproj" -c Release -o "$WORK/plugin-publish"
+cp "$WORK/plugin-publish/$PLUGIN_NAME.dll" "$WORK/plugin/HostMetrics.dll"
+{
+  printf '{\n'
+  printf '  "id": "0b2e4b3e-31ea-4f6b-9d5a-e6f66b7c0b81",\n'
+  printf '  "name": "Métriques host",\n'
+  printf '  "version": "%s",\n' "$SERVER_VERSION"
+  printf '  "owner": "Thyrack",\n'
+  printf '  "category": "General",\n'
+  printf '  "targetAbi": "%s",\n' "$TARGET_ABI"
+  printf '  "status": "Active",\n'
+  printf '  "assemblies": ["HostMetrics.dll"],\n'
+  printf '  "autoUpdate": false\n'
+  printf '}\n'
+} > "$WORK/plugin/meta.json"
+mkdir -p "$ASSETS_DIR/plugin"
+tar -C "$WORK/plugin" -cJf "$ASSETS_DIR/plugin/hostmetrics-plugin.tar.xz" HostMetrics.dll meta.json
+printf '[plugin] version=%s, targetAbi=%s\n' "$SERVER_VERSION" "$TARGET_ABI"
