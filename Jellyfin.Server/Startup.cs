@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Net.Mime;
 using System.Text;
 using Emby.Server.Implementations.EntryPoints;
+using Emby.Server.Implementations.Metrics;
 using Jellyfin.Api.Middleware;
 using Jellyfin.Database.Implementations;
 using Jellyfin.LiveTv.Extensions;
@@ -20,6 +21,7 @@ using Jellyfin.Server.Implementations.Users;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Extensions;
+using MediaBrowser.Controller.Metrics;
 using MediaBrowser.XbmcMetadata;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -153,6 +155,9 @@ namespace Jellyfin.Server
             services.AddHostedService<UserDataChangeNotifier>();
             services.AddHostedService<RecordingNotifier>();
             services.AddHostedService<DeviceAccessHost>();
+            services.AddHostedService<HostMetricsService>();
+            services.AddSingleton<IHostMetricsReader, DirectoryHostMetricsReader>();
+            services.AddSingleton<IHostMetricsService>(sp => sp.GetRequiredService<HostMetricsService>());
         }
 
         /// <summary>
