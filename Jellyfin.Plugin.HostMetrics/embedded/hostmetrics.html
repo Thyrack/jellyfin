@@ -63,6 +63,7 @@ var MESSAGES = {
     connecte: "connecté",
     attente: "en attente du jeton de session…",
     accesoRefuse: "accès refusé par le serveur",
+    erreurLecture: "erreur de lecture des métriques",
     nd: "n/d"
   }
 };
@@ -96,29 +97,30 @@ function barre(id, ratio) {
 }
 
 function rendDonnees(d) {
-  document.getElementById("cpu").textContent = pct(d.cpu.percent);
-  barre("cpu-bar", (d.cpu.percent || 0) / 100);
-  var memoireUtilisee = d.memoryTotalKiB && d.memoryAvailableKiB ? d.memoryTotalKiB - d.memoryAvailableKiB : null;
-  document.getElementById("ram").textContent = kib(memoireUtilisee) + " / " + kib(d.memoryTotalKiB);
-  barre("ram-bar", memoireUtilisee && d.memoryTotalKiB ? memoireUtilisee / d.memoryTotalKiB : 0);
-  var swapUtilisee = d.swapTotalKiB && d.swapFreeKiB ? d.swapTotalKiB - d.swapFreeKiB : null;
-  document.getElementById("swap").textContent = kib(swapUtilisee) + " / " + kib(d.swapTotalKiB);
-  barre("swap-bar", swapUtilisee && d.swapTotalKiB ? swapUtilisee / d.swapTotalKiB : 0);
-  document.getElementById("ws").textContent = octets(d.process.workingSetBytes);
-  document.getElementById("heap").textContent = octets(d.process.heapBytes);
-  document.getElementById("upt").textContent = duree(d.process.uptimeSeconds);
-  document.getElementById("hostUp").textContent = duree(d.hostUptimeSeconds);
-  rendZones(d.thermalZones || []);
-  document.getElementById("act").textContent = indisp(d.sessions.active);
-  document.getElementById("tco").textContent = indisp(d.sessions.transcoding);
+  // Le serveur sérialise par défaut en PascalCase (JsonDefaults.PascalCaseOptions).
+  document.getElementById("cpu").textContent = pct(d.Cpu.Percent);
+  barre("cpu-bar", (d.Cpu.Percent || 0) / 100);
+  var memoireUtilisee = d.MemoryTotalKiB && d.MemoryAvailableKiB ? d.MemoryTotalKiB - d.MemoryAvailableKiB : null;
+  document.getElementById("ram").textContent = kib(memoireUtilisee) + " / " + kib(d.MemoryTotalKiB);
+  barre("ram-bar", memoireUtilisee && d.MemoryTotalKiB ? memoireUtilisee / d.MemoryTotalKiB : 0);
+  var swapUtilisee = d.SwapTotalKiB && d.SwapFreeKiB ? d.SwapTotalKiB - d.SwapFreeKiB : null;
+  document.getElementById("swap").textContent = kib(swapUtilisee) + " / " + kib(d.SwapTotalKiB);
+  barre("swap-bar", swapUtilisee && d.SwapTotalKiB ? swapUtilisee / d.SwapTotalKiB : 0);
+  document.getElementById("ws").textContent = octets(d.Process.WorkingSetBytes);
+  document.getElementById("heap").textContent = octets(d.Process.HeapBytes);
+  document.getElementById("upt").textContent = duree(d.Process.UptimeSeconds);
+  document.getElementById("hostUp").textContent = duree(d.HostUptimeSeconds);
+  rendZones(d.ThermalZones || []);
+  document.getElementById("act").textContent = indisp(d.Sessions.Active);
+  document.getElementById("tco").textContent = indisp(d.Sessions.Transcoding);
 }
 
 function rendZones(zones) {
   var html = "";
   zones.forEach(function (z) {
-    var classe = z.celsius >= SEUIL_ARRET_THERMIQUE ? "valeur chaleur" : "valeur";
-    html += '<div class="ligne"><span>' + indisp(z.type || z.zone) +
-      '</span><span class="' + classe + '">' + z.celsius.toFixed(1) + " °C</span></div>";
+    var classe = z.Celsius >= SEUIL_ARRET_THERMIQUE ? "valeur chaleur" : "valeur";
+    html += '<div class="ligne"><span>' + indisp(z.Type || z.Zone) +
+      '</span><span class="' + classe + '">' + z.Celsius.toFixed(1) + " °C</span></div>";
   });
   document.getElementById("zones").innerHTML = html || '<span class="nd">' + L.nd + "</span>";
 }
@@ -173,8 +175,9 @@ function requete() {
       etat(L.connecte, "reussite");
       setTimeout(requete, INTERVALLE_MS);
     })
-    .catch(function () {
-      etat(L.accesoRefuse, "erreur");
+    .catch(function (e) {
+      var message = String((e && e.message) || "");
+      etat(message.indexOf("HTTP 4") === 0 ? L.accesoRefuse : L.erreurLecture, "erreur");
       setTimeout(requete, INTERVALLE_MS);
     });
 }
