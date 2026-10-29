@@ -77,7 +77,7 @@ Le stockage est déjà couvert par l'endpoint existant `GET /System/Info/Storage
 ### 3.4 Plugin d'affichage (`Jellyfin.Plugin.HostMetrics`)
 
 - Nouveau projet dans la solution : `Jellyfin.Plugin.HostMetrics.csproj`, références : `MediaBrowser.Common` uniquement. `HostMetricsPlugin : IPlugin, IHasWebPages` (`GetPages()` retourne une `PluginPageInfo`).
-- Page : HTML/JS vanilla embarqué (resource intégrée), **API `ApiClient`** de la coquille web (auth admin héritée), poll 3 s.
+- Page : HTML/JS vanilla embarqué (resource intégrée), auth évoluanble : **Amendement 2026-10-29** — priorité `window.ApiClient` du shell, repli sur la credence legacy `localStorage["jellyfin_credentials"]` (le token du shell n'était pas attaché avant le script de la page), état d'authentification affiché (ligne « État »), poll 3 s resilient.
 - Contenu : jauge CPU %, barre RAM (utilisé/disponible) + swap, cartes RAM process (working set, heap GC, uptime serveur), uptime host, liste zones thermiques (rouge ≥ 85 °C), compteurs sessions actives / transcodage.
 - Libellés externalisés dans un unique objet `MESSAGES` du fichier (baseline i18n fonctionnelle, un seul fichier de langue initial = fr).
 - Accès garanti : `configurationpage?name=HostMetrics`. `EnableInMainMenu`, `MenuSection`, `MenuIcon` remplis pour l'intégration menu opportuniste (le listing menu dépend du web ; l'URL directe est garantie par le contrôleur DashboardController).

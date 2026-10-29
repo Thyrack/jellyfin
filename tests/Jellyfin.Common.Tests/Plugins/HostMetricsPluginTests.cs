@@ -40,6 +40,7 @@ public class HostMetricsPluginTests
         var html = reader.ReadToEnd();
         Assert.Contains("System/HostMetrics", html, StringComparison.Ordinal);
         Assert.Contains("MESSAGES", html, StringComparison.Ordinal);
+        Assert.Contains("jellyfin_credentials", html, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -12,12 +12,17 @@
   .barre { background: rgba(127,127,127,.25); border-radius: 4px; height: 10px; margin-top: 6px; }
   .barre > div { background: #00a4dc; height: 10px; border-radius: 4px; width: 0; }
   .nd { opacity: .5; }
+  .etat { font-size: .85em; margin: 0 0 8px; }
+  .reussite { color: #5cbd5c; }
+  .attente { color: #f2b01e; }
+  .erreur { color: #d15353; }
   h1 { font-size: 1.15em; } h2 { font-size: 1em; margin: 4px 0; }
 </style>
 </head>
 <body>
 <div data-role="page" class="page standalonePage" data-theme="b">
   <h1></h1>
+  <div class="ligne etat"><span data-label="etat"></span><span class="valeur" id="etat"></span></div>
   <div class="carte">
     <div class="ligne"><span data-label="cpu"></span><span class="valeur" id="cpu"></span></div>
     <div class="barre"><div id="cpu-bar"></div></div>
@@ -54,6 +59,10 @@ var MESSAGES = {
     sessions: "Sessions (300 s)",
     active: "Active",
     transcodage: "En transcodage",
+    etat: "État",
+    connecte: "connecté",
+    attente: "en attente du jeton de session…",
+    accesoRefuse: "accès refusé par le serveur",
     nd: "n/d"
   }
 };
@@ -114,20 +123,60 @@ function rendZones(zones) {
   document.getElementById("zones").innerHTML = html || '<span class="nd">' + L.nd + "</span>";
 }
 
-function requete() {
-  var entete = {};
-  var url = "/System/HostMetrics";
-  if (window.ApiClient) {
-    entete.Authorization = "MediaBrowser Token=\"" + ApiClient.accessToken() + "\"";
-    url = ApiClient.serverAddress() + url;
+function etat(texte, classeCss) {
+  var el = document.getElementById("etat");
+  if (el) {
+    el.textContent = texte;
+    el.className = "valeur " + classeCss;
   }
-  fetch(url, { headers: entete })
+}
+
+function jetonDuNavigateur() {
+  // Priorité au client du shell ; repli sur la credence legacy du localStorage
+  // (key « jellyfin_credentials », créée par jellyfin-apiclient au login).
+  try {
+    if (window.ApiClient && window.ApiClient.accessToken) {
+      var jetonShell = window.ApiClient.accessToken();
+      if (jetonShell) {
+        return { base: window.ApiClient.serverAddress() || "", jeton: jetonShell };
+      }
+    }
+    var credences = JSON.parse(window.localStorage.getItem("jellyfin_credentials") || "{}");
+    var serveurs = credences.Servers || [];
+    for (var i = 0; i < serveurs.length; i++) {
+      if (serveurs[i] && serveurs[i].AccessToken) {
+        return { base: "", jeton: serveurs[i].AccessToken };
+      }
+    }
+  } catch (e) {
+    // jeton indisponible : polling continu, la credence peut apparaître plus tard
+  }
+  return null;
+}
+
+function requete() {
+  var auth = jetonDuNavigateur();
+  if (!auth) {
+    etat(L.attente, "attente");
+    setTimeout(requete, INTERVALLE_MS);
+    return;
+  }
+  fetch(auth.base + "/System/HostMetrics", {
+    headers: { Authorization: "MediaBrowser Token=\"" + auth.jeton + "\"" }
+  })
     .then(function (r) {
       if (!r.ok) { throw new Error("HTTP " + r.status); }
       return r.json();
     })
-    .then(function (d) { rendDonnees(d); setTimeout(requete, INTERVALLE_MS); })
-    .catch(function () { setTimeout(requete, INTERVALLE_MS); });
+    .then(function (d) {
+      rendDonnees(d);
+      etat(L.connecte, "reussite");
+      setTimeout(requete, INTERVALLE_MS);
+    })
+    .catch(function () {
+      etat(L.accesoRefuse, "erreur");
+      setTimeout(requete, INTERVALLE_MS);
+    });
 }
 
 appliqueLabels();
