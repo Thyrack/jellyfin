@@ -101,7 +101,16 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            SampleOnce();
+            try
+            {
+                SampleOnce();
+            }
+            catch (Exception ex)
+            {
+                // Un incident ponctuel n'arrête pas le service : le snapshot précédent reste servi, cycle suivant réessaie.
+                _logger.LogError(ex, "Échantillonnage des métriques host en échec : cycle ignoré");
+            }
+
             await Task.Delay(SamplingIntervalMilliseconds, stoppingToken).ConfigureAwait(false);
         }
     }
@@ -113,6 +122,7 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
         {
             InstruireUneFois(CheminStat);
             _cpuPercent = null;
+            _cpuPrecedent = null;
             return;
         }
 
@@ -121,6 +131,7 @@ public sealed class HostMetricsService : BackgroundService, IHostMetricsService
         {
             InstruireUneFois(CheminStat + ":parse");
             _cpuPercent = null;
+            _cpuPrecedent = null;
             return;
         }
 

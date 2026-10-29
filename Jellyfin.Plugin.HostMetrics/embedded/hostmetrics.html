@@ -63,9 +63,15 @@ var INTERVALLE_MS = 3000;
 
 function indisp(v) { return v === null || v === undefined ? L.nd : v; }
 function kib(v) { return v == null ? L.nd : (v / 1024 / 1024).toFixed(1) + " GiB"; }
-function octets(v) { return v == null ? L.nd : (v / 1024 / 1024).toFixed(0) + " Mo"; }
+function octets(v) { return v == null ? L.nd : (v / 1024 / 1024).toFixed(0) + " Mio"; }
 function pct(p) { return p == null ? L.nd : p.toFixed(1) + " %"; }
-function duree(v) { return v == null ? L.nd : Math.floor(v / 3600) + " h " + Math.round((v % 3600) / 60) + " min"; }
+function duree(v) {
+  if (v == null) { return L.nd; }
+  var h = Math.floor(v / 3600);
+  var m = Math.round((v % 3600) / 60);
+  if (m === 60) { h++; m = 0; }
+  return h + " h " + m + " min";
+}
 
 function appliqueLabels() {
   document.title = L.titre;
@@ -116,7 +122,10 @@ function requete() {
     url = ApiClient.serverAddress() + url;
   }
   fetch(url, { headers: entete })
-    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      if (!r.ok) { throw new Error("HTTP " + r.status); }
+      return r.json();
+    })
     .then(function (d) { rendDonnees(d); setTimeout(requete, INTERVALLE_MS); })
     .catch(function () { setTimeout(requete, INTERVALLE_MS); });
 }

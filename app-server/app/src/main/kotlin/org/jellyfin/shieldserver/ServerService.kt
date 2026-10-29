@@ -189,8 +189,8 @@ class ServerService : Service() {
      * jamais le démarrage du serveur.
      */
     private fun syncPlugin(datadir: File) {
-        val pluginDir = File(datadir, "plugins/HostMetrics").apply { mkdirs() }
         try {
+            val pluginDir = File(datadir, "plugins/HostMetrics").apply { mkdirs() }
             assets.open("plugin/hostmetrics-plugin.tar.xz").use { flux ->
                 TarArchiveInputStream(XZCompressorInputStream(flux)).use { tar ->
                     var ecrits = 0
