@@ -40,7 +40,7 @@ Le stockage est déjà couvert par l'endpoint existant `GET /System/Info/Storage
 | `HostMetricsService` | `Emby.Server.Implementations/Metrics/` | `BackgroundService` singleton : timer 2 s, échantillonne procfs/sysfs + process + sessions, stocke un snapshot unique thread-safe (horodaté UTC). |
 | `HostMetricsInfo` | `MediaBrowser.Model/System/` | Modèle DTO côté noyau (contrat stable, multi-projets). |
 | `HostMetricsDto` | `Jellyfin.Api/Models/SystemInfoDtos/` | DTO API `record` `required` (pattern `SystemStorageDto`), mapping interne depuis `HostMetricsInfo`. |
-| Route `GET /System/HostMetrics` | `Jellyfin.Api/Controllers/SystemController.cs` | `Policies.RequiresElevation` (comme `Info/Storage`), retourne `HostMetricsDto`. |
+| Route `GET /System/HostMetrics` | `Jellyfin.Api/Controllers/SystemController.cs` | **Amendement 2026-10-29 : `[Authorize]` (tout utilisateur connecté)** ; était initialement `Policies.RequiresElevation` (comme `Info/Storage`) — l'exposition CPU/RAM/températures/sessions aux visiteurs connectés de la Shield est assumée par l'admin. Retourne `HostMetricsDto`. |
 | `ISystemManager.GetHostMetrics()` | `MediaBrowser.Controller/ISystemManager.cs` + `Emby.Server.Implementations/SystemManager.cs` | Délégation vers `IHostMetricsService` (cohérence avec `GetSystemStorageInfo`). |
 | Enregistrement DI | `Jellyfin.Server/Startup.cs` (convention `AddHostedService` l.149-155) | `services.AddHostedService<HostMetricsService>()` (sans `IHostedService`, la boucle 2 s ne démarre jamais) + façade sur la même instance : `services.AddSingleton<IHostMetricsService>(sp => sp.GetRequiredService<HostMetricsService>())`. |
 
@@ -106,7 +106,7 @@ Le stockage est déjà couvert par l'endpoint existant `GET /System/Info/Storage
 ## 6. Tests (TDD, xUnit comme le reste du repo)
 
 - `HostMetricsServiceTests` : fixtures procfs (stat multi-lignes, meminfo dense, thermal partielle, swap absent, tokens bizarres) ; delta CPU 2 échantillons (précision ±0.x %) ; null après aucun échantillon ; pas d'exception sur entrées illisibles ; WARN unique.
-- `SystemControllerTests` : contrôleur avec `IHostMetricsService` mocké → mapping DTO asserted ; policy `RequiresElevation` documentée (convention du repo, pas de test d'autorisation dédié).
+- `SystemControllerTests` : contrôleur avec `IHostMetricsService` mocké → mapping DTO asserted ; policy `[Authorize]` (tout utilisateur connecté, amendement 2026-10-29) documentée (convention du repo, pas de test d'autorisation dédié).
 - Test `ServerAssetsTest.kt` mis à jour pour les nouveaux assets plugin (Kotlin, JUnit existant).
 - `dotnet test` sur les projets de tests concernés ; tests Kotlin `./gradlew :app:testDebugUnitTest` pour le module APK.
 

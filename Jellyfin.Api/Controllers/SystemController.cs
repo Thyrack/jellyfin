@@ -93,12 +93,12 @@ public class SystemController : BaseJellyfinApiController
     /// Gets the host metrics (CPU, memory, process, thermal, sessions).
     /// </summary>
     /// <response code="200">Metrics snapshot retrieved.</response>
-    /// <response code="403">User does not have permission to retrieve information.</response>
+    /// <response code="401">Authentication required.</response>
     /// <returns>A <see cref="HostMetricsDto"/> with the current host metrics snapshot.</returns>
     [HttpGet("HostMetrics")]
-    [Authorize(Policy = Policies.RequiresElevation)]
+    [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public ActionResult<HostMetricsDto> GetHostMetrics()
         => Ok(HostMetricsDto.FromHostMetricsInfo(_hostMetricsService.GetSnapshot()));
 
