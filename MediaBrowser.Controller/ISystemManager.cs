@@ -38,4 +38,10 @@ public interface ISystemManager
     /// </summary>
     /// <returns>The <see cref="SystemStorageInfo"/>.</returns>
     SystemStorageInfo GetSystemStorageInfo();
+
+    /// <summary>
+    /// Gets the current host metrics snapshot.
+    /// </summary>
+    /// <returns><see cref="HostMetricsInfo"/> du host.</returns>
+    HostMetricsInfo GetHostMetrics();
 }

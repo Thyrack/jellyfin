@@ -7,6 +7,7 @@ using MediaBrowser.Common.Updates;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Metrics;
 using MediaBrowser.Model.System;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
@@ -23,6 +24,7 @@ public class SystemManager : ISystemManager
     private readonly IStartupOptions _startupOptions;
     private readonly IInstallationManager _installationManager;
     private readonly ILibraryManager _libraryManager;
+    private readonly IHostMetricsService _hostMetricsService;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SystemManager"/> class.
@@ -34,6 +36,7 @@ public class SystemManager : ISystemManager
     /// <param name="startupOptions">Instance of <see cref="IStartupOptions"/>.</param>
     /// <param name="installationManager">Instance of <see cref="IInstallationManager"/>.</param>
     /// <param name="libraryManager">Instance of <see cref="ILibraryManager"/>.</param>
+    /// <param name="hostMetricsService">Instance of <see cref="IHostMetricsService"/> interface.</param>
     public SystemManager(
         IHostApplicationLifetime applicationLifetime,
         IServerApplicationHost applicationHost,
@@ -41,7 +44,8 @@ public class SystemManager : ISystemManager
         IServerConfigurationManager configurationManager,
         IStartupOptions startupOptions,
         IInstallationManager installationManager,
-        ILibraryManager libraryManager)
+        ILibraryManager libraryManager,
+        IHostMetricsService hostMetricsService)
     {
         _applicationLifetime = applicationLifetime;
         _applicationHost = applicationHost;
@@ -50,6 +54,7 @@ public class SystemManager : ISystemManager
         _startupOptions = startupOptions;
         _installationManager = installationManager;
         _libraryManager = libraryManager;
+        _hostMetricsService = hostMetricsService;
     }
 
     /// <inheritdoc />
@@ -107,6 +112,10 @@ public class SystemManager : ISystemManager
             Libraries = virtualFolderInfos.ToArray()
         };
     }
+
+    /// <inheritdoc />
+    public HostMetricsInfo GetHostMetrics()
+        => _hostMetricsService.GetSnapshot();
 
     /// <inheritdoc />
     public PublicSystemInfo GetPublicSystemInfo(HttpRequest request)
