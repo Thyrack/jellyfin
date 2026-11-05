@@ -162,6 +162,26 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   (vérifié) ; réactiver exigera soit un patch jellyfin-ffmpeg (mux + hwdownload),
   soit une source alternative compilée avec mediacodec + surface pipeline.
 
+### G5-A (fait) — frontière de segments : la seule limite restante du HW
+- Matrice v2 dans RUNFF (continu × frontière) : l'encodage HW **fournit 150 frames**
+  via `-f mpegts` (TS en fichier unique) et `-f h264` (raw annex-B continu) → **temps
+  réel validé** ; les 4 muxers à frontière de la matrice (hls fmp4 / hls TS / segment
+  mpegts / matroska) **stallent au même instant (~3-5 s)** — matroska étant un
+  conteneur mono-fichier, la limite est le créneau, pas la frontière — reproductibles
+  en sessions fraîches séparées (mp4 et nut, hors matrice, au même motif observé).
+- Interprétation : l'encodeur HW accepte le flux continu mais se bloque à la création
+  d'un AUTRE contexte de sortie (re-liaison d'attente de l'API MediaCodec) ;
+  l'analyse du runtime libav/mediacodec reste à produire (G5-B1).
+- Le « TS en fichier unique » marche on-device : un patch serveur « TS continu + écriture
+  de playlists HLS par le serveur .NET » est la piste B2 concrète pour réactiver le HW
+  sans modifier jellyfin-ffmpeg (cf. la note G5-B2 ci-dessous).
+
+### Note G5-B2 (piste retenue pour l'intégration serveur)
+- Le serveur exécuterait l'encodeur HW via `-f mpegts` (fichier continu) avec une
+  écriture de playlist HLS dynamique par le serveur .NET (chaque segment complété
+  est indexé côté serveur, hors le muxer ffmpeg). Piste serveur pour contourner
+  le stall des muxers à frontière, à implémenter en G5-B2.
+
 ### Veille anti-boucle ffmpeg (HW MediaCodec)
 - Constat run réel : **deux jobs HW MediaCodec concomitants** (client à deux profils de
   qualité, session ancienne non refermée) → l'un des ffmpeg boucle en userland

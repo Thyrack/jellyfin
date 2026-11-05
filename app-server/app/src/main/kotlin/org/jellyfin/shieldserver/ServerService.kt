@@ -403,10 +403,9 @@ class ServerService : Service() {
         thread(name = "mux-matrice", isDaemon = true) {
             try {
                 val outDir = File(DataDirSelector.RACINE_EXTERNE, "cache/transcodes")
-                val ffmpeg = File(File(filesDir, "jf-server"), "bin/ffmpeg")
                 journal.appendText("== matrice mux src=$src (${Date()}) ==\n")
                 Log.i(TAG, "matrice mux : src=$src")
-                for (cas in MediaMuxProbe.matrice(ffmpeg.path, src, File(outDir, "probe/live").path)) {
+                for (cas in MediaMuxProbe.matrice(src, File(outDir, "probe/live").path)) {
                     executerCas(cas, journal, outDir)
                 }
                 journal.appendText("== fin matrice ==\n")
