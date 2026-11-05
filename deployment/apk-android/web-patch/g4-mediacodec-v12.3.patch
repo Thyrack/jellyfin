@@ -1,0 +1,31 @@
+--- a/src/apps/dashboard/routes/playback/transcoding.tsx
++++ b/src/apps/dashboard/routes/playback/transcoding.tsx
+@@ -149,7 +149,7 @@
+     }, [ config ]);
+ 
+     const hardwareAccelType = config?.HardwareAccelerationType || HardwareAccelerationType.None;
+-    const isHwaSelected = [ 'amf', 'nvenc', 'qsv', 'vaapi', 'rkmpp', 'videotoolbox' ].includes(hardwareAccelType);
++    const isHwaSelected = [ 'amf', 'nvenc', 'qsv', 'vaapi', 'rkmpp', 'videotoolbox', 'mediacodec' ].includes(hardwareAccelType);
+ 
+     const availableCodecs = useMemo(() => (
+         CODECS.filter(codec => codec.types.includes(hardwareAccelType))
+@@ -203,6 +203,7 @@
+                                 <MenuItem value='rkmpp'>Rockchip MPP (RKMPP)</MenuItem>
+                                 <MenuItem value='videotoolbox'>Apple VideoToolBox</MenuItem>
+                                 <MenuItem value='v4l2m2m'>Video4Linux2 (V4L2)</MenuItem>
++                                <MenuItem value='mediacodec'>MediaCodec (Android)</MenuItem>
+                             </TextField>
+ 
+                             {hardwareAccelType === 'vaapi' && (
+--- a/src/apps/dashboard/features/playback/constants/codecs.ts
++++ b/src/apps/dashboard/features/playback/constants/codecs.ts
+@@ -10,7 +10,8 @@
+             'vaapi',
+             'rkmpp',
+             'videotoolbox',
+-            'v4l2m2m'
++            'v4l2m2m',
++            'mediacodec'
+         ]
+     },
+     {

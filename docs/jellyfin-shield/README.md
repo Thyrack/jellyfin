@@ -93,6 +93,23 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
 - L'USB TOSHIBA_EXT (1,8 T, CIFS) reste réservé aux fichiers médias (lecture seule
   par Jellyfin) : jamais la base SQLite (locks SMB non fiables → corruption).
 
+### Transcodage HW MediaCodec (G4 — opérationnel)
+- Réglage actif : `HardwareAccelerationType=mediacodec` (défaut du build ; identique dans
+  l'UI web dash, dropdown « MediaCodec (Android) » ajouté au web). `HardwareDecodingCodecs`
+  intègre `hevc` ; whitelist `EncoderValidator` étendue avec `h264_mediacodec`
+  (encoders) et `hevc_mediacodec` (decoders) — hevc en SORTIE non validé on-device :
+  volontairement non whitelisté.
+- Routes validées sur device (sonde G2 + lecture réelle G4) : HEVC → décode HW
+  (`-hwaccel mediacodec -c:v hevc_mediacodec`) + encode `-c:v h264_mediacodec` ;
+  H264 → décode CPU + encode HW (meilleur débit que le décode HW) ; fallback libx264/libx265
+  automatique si l'encodeur HW indisponible.
+- Consommation mesurée pendant lecture réelle : ffmpeg HW ≈ **1,25 cœur** (la sonde G2
+  donnait ≈ 2,5 cœurs ; x264 logiciel saturerait 3-4 cœurs).
+- Limites : 4K → transcodage non temps réel (26 fps mesurés avec scale) ; HEVC 10-bit
+  couleur revalidée au run G4 (sortie décodeur NV12) ; si l'encodeur HW échoue à
+  l'exécution, Jellyfin marque le job en échec (re-demande en SW via le réglage qualité
+  client).
+
 ### Limitations MVP documentées
 - ffmpeg embarqué = build « server-live » (Lot LiveTV) : jellyfin-ffmpeg v7.1.3-6 + réseau
   http/https (openssl statique) + **libx264** (sans ASM NEON : nasm absent du cross — transcodage
@@ -124,3 +141,14 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   un provider natif `CryptoNative_*` maison via BoringSSL système (libcrypto/libssl) ; providers limités au client
   TLS (pas de HTTPS serveur local, pas de client-cert) ; RSA/ECDSA/DSA/PKCS7/OCSP/ChaCha en échec propre.
   Canari automatique : cycle « Update Plugins » (~4 s, sans [ERR] manifest). Voir `deployment/apk-android/tlsprovider/`.
+
+### Veille anti-boucle ffmpeg (HW MediaCodec)
+- Constat run réel : **deux jobs HW MediaCodec concomitants** (client à deux profils de
+  qualité, session ancienne non refermée) → l'un des ffmpeg boucle en userland
+  (~230× un cœur, aucune sortie segment). Comportement interne au driver/LibAV
+  MediaCodec sous contention d'instances HW.
+- Remède embarqué (G4) : le service échantillonne les CPU ticks des ffmpeg (2 s) ;
+  au-delà de 15 cœurs (1 500 ticks/s, inatteignable en usage légitime),
+  le kill libère la file — le TranscodeManager relance à la prochaine demande client.
+- Usage : une lecture HW à la fois — si une session précédente traîne, le redémarrage
+  de l'apk la purge (force-stop + relaunch).

@@ -248,6 +248,7 @@ class ServerService : Service() {
                 notifyRunning()
                 val proc = process!!
                 pidActif = android.os.Process.myPid()
+                lancerVeilleHw()
                 // télémétrie du run : dernières lignes retenues pour un fichier lisible via run-as (diagnostic T5)
                 val sb = StringBuilder()
                 val runLog = File(filesDir, "jf-server/last-run.log")
@@ -283,6 +284,67 @@ class ServerService : Service() {
         "LD_LIBRARY_PATH" to serverDir.path,
         "TMPDIR" to serverTempDir(filesDir).path,
     )
+
+    /** Intervalle d'échantillonnage de la veille (décision basée sur ce délai réel). */
+    private val INTERVALLE_VEILLE_S = 2.0
+
+    /** Veille anti-boucle : échantillonne les process ffmpeg de l'uid de l'app et
+     *  active un kill si un usage CPU dépasse le plafond [FfmpegWatchdog.SEUIL_TICKS_PAR_SEC]
+     *  (deadlock des instances HW MediaCodec concomitantes, constat run réel ~230× un cœur). */
+    private fun lancerVeilleHw() {
+        thread(name = "veille-hw", isDaemon = true) {
+            val echantillons = mutableMapOf<Int, Long>()
+            try {
+                while (running && pidActif != null) {
+                    try {
+                        verifierProcessFfmpeg(echantillons)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "veille-hw : itération reprise : ${e.javaClass.simpleName} ${e.message ?: ""}")
+                    }
+                    Thread.sleep((INTERVALLE_VEILLE_S * 1_000).toLong())
+                }
+            } catch (e: InterruptedException) {
+                // onDestroy : sortie propre
+            }
+        }
+    }
+
+    /** Un passage d'échantillonnage : kill au-dedssus du plafond, purge des PIDs disparus. */
+    private fun verifierProcessFfmpeg(echantillons: MutableMap<Int, Long>) {
+        val pids = enfantsFfmpeg()
+        for ((pid, ticks) in pids) {
+            verifierPid(pid, echantillons[pid], ticks)
+            echantillons[pid] = ticks
+        }
+        echantillons.keys.retainAll(pids.keys)
+    }
+
+    /** Décide du kill d'un PID d'après l'échantillon précédent (aucun kill sans historique). */
+    private fun verifierPid(pid: Int, precedent: Long?, ticks: Long) {
+        if (precedent == null) return
+        if (!FfmpegWatchdog.decider(precedent, ticks, INTERVALLE_VEILLE_S)) return
+        Log.w(TAG, "veille-hw : kill $pid (boucle CPU probable, ${((ticks - precedent) / INTERVALLE_VEILLE_S).toInt()} ticks/s)")
+        val kill = Runtime.getRuntime().exec(arrayOf("kill", "-9", pid.toString()))
+        try {
+            val exit = kill.waitFor()
+            if (exit != 0) Log.w(TAG, "veille-hw : kill $pid a échoué (exit $exit)")
+        } finally {
+            kill.destroy()
+        }
+    }
+
+    /** Échantillon CPU des process `ffmpeg` visibles par l'uid de l'app → map PID → utime+stime. */
+    private fun enfantsFfmpeg(): Map<Int, Long> {
+        val pids = mutableMapOf<Int, Long>()
+        for (dossier in File("/proc").listFiles { f -> !f.name.startsWith(".") } ?: emptyArray()) {
+            val pid = dossier.name.toIntOrNull() ?: continue
+            val cmdline = runCatching { File(dossier, "cmdline").readBytes() }.getOrNull() ?: continue
+            val stat = runCatching { File(dossier, "stat").readText() }.getOrNull() ?: continue
+            val ticks = FfmpegWatchdog.ticksProcess(stat) ?: continue
+            if (FfmpegWatchdog.estProcessFfmpeg(String(cmdline, Charsets.UTF_8))) pids[pid] = ticks
+        }
+        return pids
+    }
 
     private fun notifyRunning() {
         val n = Notification.Builder(this, CHANNEL_ID)

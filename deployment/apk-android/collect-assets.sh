@@ -219,6 +219,18 @@ cp "$HOSTPOLICY_SRC" "$WORK/server/libhostpolicy.so"
 mkdir -p "$WORK/web-src"
 curl -sL "https://github.com/jellyfin/jellyfin-web/archive/refs/tags/${JF_WEB_TAG}.tar.gz" \
   | tar -xzf - -C "$WORK/web-src" --strip-components=1
+# (2-bis) patch web G4 : l'option MediaCodec (Android) dans le formulaire de transcodage ;
+# sans elle, la sauvegarde de la page réinitialiserait HardwareAccelerationType=mediacodec.
+WEB_PATCH_DIR="$DEPLOY_DIR/web-patch"
+[ -f "$WEB_PATCH_DIR/g4-mediacodec-${JF_WEB_TAG}.patch" ] \
+  || { printf '%s\n' "patch web G4 absent pour $JF_WEB_TAG (cf. $WEB_PATCH_DIR/README.md)" >&2; exit 1; }
+patch -d "$WORK/web-src" -p1 --batch < "$WEB_PATCH_DIR/g4-mediacodec-${JF_WEB_TAG}.patch" \
+  || { printf '%s\n' "application du patch web G4 échouée (cf. $WEB_PATCH_DIR/README.md)" >&2; exit 1; }
+if ! grep -q "mediacodec" "$WORK/web-src/src/apps/dashboard/routes/playback/transcoding.tsx" \
+   || ! grep -q "mediacodec" "$WORK/web-src/src/apps/dashboard/features/playback/constants/codecs.ts"; then
+  printf '%s\n' "vérification post-patch web G4 échouée" >&2
+  exit 1
+fi
 ( cd "$WORK/web-src" && npm install > "$LOGS_DIR/npm.log" 2>&1 && npm run build:production > "$LOGS_DIR/npm-build.log" 2>&1 )
 # NB (revue plan) : build:production requiert les devDependencies (webpack/cross-env) → npm install COMPLET ;
 # logs dans $LOGS_DIR : valeur courante (shell ou .env) préservée, défauts appliqués sinon.

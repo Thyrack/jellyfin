@@ -321,6 +321,108 @@ public class EncodingHelperTests
         Assert.Contains("pan=stereo", args, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_UsesHwEncoderWhenAvailable()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc");
+        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, new EncodingOptions());
+
+        Assert.Equal("h264_mediacodec", args);
+    }
+
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_FallsBackToX264WhenUnavailable()
+    {
+        var state = BuildVideoState("hevc");
+        var args = CreateHelper().GetVideoEncoder(state, new EncodingOptions());
+
+        Assert.Equal("libx264", args);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecHevc_UsesValidatedG2Route()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc");
+        state.VideoStream.PixelFormat = "yuv420p";
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+
+        Assert.Contains("-hwaccel mediacodec", args, StringComparison.Ordinal);
+        Assert.Contains("-c:v hevc_mediacodec", args, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecHevc10Bit_KeepsRouteWhenOptionEnabled()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc", bitDepth: 10);
+        state.VideoStream.PixelFormat = "yuv420p10le";
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+
+        Assert.Contains("-c:v hevc_mediacodec", args, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecH264_KeepsCpuDecode()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("h264_mediacodec")).Returns(true);
+        var state = BuildVideoState("h264");
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+
+        Assert.Equal(string.Empty, args);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_Mediacodec_WhenHwabsent_EmptyArgs()
+    {
+        // Mock par défaut : SupportsHwaccel/SupportsDecoder = false → pas d'args HW
+        var state = BuildVideoState("hevc");
+        var args = CreateHelper().GetInputVideoHwaccelArgs(state, new EncodingOptions());
+
+        Assert.Equal(string.Empty, args);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecHevcChromaIncorrect_RouteRefusee()
+    {
+        // 4:4:4 / 12-bit hors capacités décodeur MediaCodec Shield (Main/Main10)
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc", bitDepth: 12);
+        state.VideoStream.PixelFormat = "yuv444p10le";
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+
+        Assert.Equal(string.Empty, args);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecHevc10bit_Deactive_EnArgsVides()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc", bitDepth: 10);
+        state.VideoStream.PixelFormat = "yuv420p10le";
+        var options = new EncodingOptions { EnableDecodingColorDepth10Hevc = false };
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, options);
+
+        Assert.Equal(string.Empty, args);
+    }
+
     private static EncodingJobInfo BuildAudioState(string audioCodec, int requestedSampleRate, string? outputContainer = null)
     {
         var audio = new MediaStream { Index = 0, Type = MediaStreamType.Audio, Codec = "flac", SampleRate = 96000 };
@@ -384,8 +486,12 @@ public class EncodingHelperTests
 
     private static EncodingHelper CreateHelper()
     {
+        return CreateHelper(new Mock<IMediaEncoder>().Object);
+    }
+
+    private static EncodingHelper CreateHelper(IMediaEncoder mediaEncoder)
+    {
         var appPaths = Mock.Of<IApplicationPaths>();
-        var mediaEncoder = new Mock<IMediaEncoder>();
         var subtitleEncoder = new Mock<ISubtitleEncoder>();
         var config = new Mock<IConfiguration>();
         var configurationManager = new Mock<IConfigurationManager>();
@@ -393,10 +499,39 @@ public class EncodingHelperTests
 
         return new EncodingHelper(
             appPaths,
-            mediaEncoder.Object,
+            mediaEncoder,
             subtitleEncoder.Object,
             config.Object,
             configurationManager.Object,
             pathManager.Object);
+    }
+
+    private static EncodingJobInfo BuildVideoState(string videoCodec, int? bitDepth = null)
+    {
+        var video = new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = videoCodec, Width = 1920, Height = 1080 };
+        if (bitDepth is not null)
+        {
+            video.BitDepth = bitDepth;
+        }
+
+        var audio = new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "ac3", Channels = 6 };
+
+        return new EncodingJobInfo(TranscodingJobType.Progressive)
+        {
+            MediaSource = new MediaSourceInfo
+            {
+                Container = "mkv",
+                MediaStreams = [video, audio],
+                Path = "/media/video.mkv",
+                Protocol = MediaProtocol.File,
+            },
+            VideoStream = video,
+            AudioStream = audio,
+            OutputVideoCodec = "h264",
+            OutputAudioCodec = "aac",
+            BaseRequest = new VideoRequestDto(),
+            IsVideoRequest = true,
+            IsInputVideo = true,
+        };
     }
 }

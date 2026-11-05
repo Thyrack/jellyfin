@@ -45,5 +45,10 @@ public enum HardwareAccelerationType
     /// <summary>
     /// Rockchip Media Process Platform (RKMPP).
     /// </summary>
-    rkmpp = 7
+    rkmpp = 7,
+
+    /// <summary>
+    /// Android MediaCodec (NVidia Shield / Tegra).
+    /// </summary>
+    mediacodec = 8
 }

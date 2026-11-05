@@ -228,6 +228,8 @@ namespace MediaBrowser.Controller.MediaEncoding
                     { HardwareAccelerationType.videotoolbox,         hwEncoder + "_videotoolbox" },
                     { HardwareAccelerationType.v4l2m2m,              hwEncoder + "_v4l2m2m" },
                     { HardwareAccelerationType.rkmpp,                hwEncoder + "_rkmpp" },
+                    // G4 (Shield) : encodeurs MediaCodec validés par la sonde G2 (108-116 fps sur 1080p).
+                    { HardwareAccelerationType.mediacodec,           hwEncoder + "_mediacodec" },
                 };
 
                 if (hwType != HardwareAccelerationType.none
@@ -6577,6 +6579,7 @@ namespace MediaBrowser.Controller.MediaEncoding
                     HardwareAccelerationType.nvenc => GetNvdecVidDecoder(state, options, videoStream, bitDepth),
                     HardwareAccelerationType.videotoolbox => GetVideotoolboxVidDecoder(state, options, videoStream, bitDepth),
                     HardwareAccelerationType.rkmpp => GetRkmppVidDecoder(state, options, videoStream, bitDepth),
+                    HardwareAccelerationType.mediacodec => GetMediacodecVidDecoder(state, options, videoStream, bitDepth),
                     _ => string.Empty
                 };
 
@@ -6588,6 +6591,41 @@ namespace MediaBrowser.Controller.MediaEncoding
 
             // leave blank so ffmpeg will decide
             return null;
+        }
+
+        /// <summary>
+        /// Gets the MediaCodec hw decoder arguments for the input video.
+        /// </summary>
+        /// <param name="state">Encoding state.</param>
+        /// <param name="options">Encoding options.</param>
+        /// <param name="videoStream">The video stream.</param>
+        /// <param name="bitDepth">The color bit depth of the video stream.</param>
+        /// <returns>HW decoder args (G2-validated route: 108 fps), empty string if not applicable.</returns>
+        /// <remarks>G4 (Shield) : HEVC uniquement (route <c>-hwaccel mediacodec -c:v hevc_mediacodec</c> validée
+        /// par la sonde G2) ; h264 reste décodé en CPU (route dcpu-enc-mc 116 fps, plus rapide qu'un décode HW).
+        /// PixelFormat limité à 4:2:0 (yuv420p / yuv420p10le) — le décodeur Shield ne couvre que Main/Main10 ;
+        /// 10 bits : le décodeur MediaCodec ajuste la sortie (NV12) — vérifié au run G4.</remarks>
+        private string GetMediacodecVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
+        {
+            var isHevc = string.Equals(videoStream.Codec, "hevc", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(videoStream.Codec, "h265", StringComparison.OrdinalIgnoreCase);
+            var isCompatibleChroma = string.Equals(videoStream.PixelFormat, "yuv420p", StringComparison.OrdinalIgnoreCase)
+                                     || string.Equals(videoStream.PixelFormat, "yuv420p10le", StringComparison.OrdinalIgnoreCase);
+            if (!isHevc || !isCompatibleChroma)
+            {
+                return string.Empty;
+            }
+
+            // Garde 10 bits alignée sur GetHwDecoderName : l'option utilisateur reste maître.
+            if (bitDepth == 10 && !options.EnableDecodingColorDepth10Hevc)
+            {
+                return string.Empty;
+            }
+
+            var isDecoderAvailable = _mediaEncoder.SupportsHwaccel("mediacodec")
+                                     && _mediaEncoder.SupportsDecoder("hevc_mediacodec")
+                                     && options.HardwareDecodingCodecs.Contains("hevc", StringComparison.OrdinalIgnoreCase);
+            return isDecoderAvailable ? " -hwaccel mediacodec -c:v hevc_mediacodec" : string.Empty;
         }
 
         /// <summary>

@@ -58,7 +58,9 @@ namespace MediaBrowser.MediaEncoding.Encoder
             "mpeg4_rkmpp",
             "vp8_rkmpp",
             "vp9_rkmpp",
-            "av1_rkmpp"
+            "av1_rkmpp",
+            // G4 (Shield) : décodeur HEVC route validée sonde G2 (108 fps).
+            "hevc_mediacodec"
         ];
 
         private static readonly string[] _requiredEncoders =
@@ -98,7 +100,10 @@ namespace MediaBrowser.MediaEncoding.Encoder
             "mjpeg_videotoolbox",
             "h264_rkmpp",
             "hevc_rkmpp",
-            "mjpeg_rkmpp"
+            "mjpeg_rkmpp",
+            // G4 (Shield) : encodeur MediaCodec h264 validé sonde G2 + run réel G4.
+            // hevc_mediacodec en SORTIE non validé on-device : volontairement absent de la whitelist.
+            "h264_mediacodec"
         ];
 
         private static readonly string[] _requiredFilters =

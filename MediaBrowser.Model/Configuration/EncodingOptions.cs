@@ -61,7 +61,8 @@ public class EncodingOptions
         EnableSubtitleExtraction = true;
         SubtitleExtractionTimeoutMinutes = 30;
         AllowOnDemandMetadataBasedKeyframeExtractionForExtensions = ["mkv"];
-        HardwareDecodingCodecs = ["h264", "vc1"];
+        // Build Shield (G4) : hevc ajouté — décodage HW HEVC validé 108 fps sonde G2 (route -hwaccel mediacodec).
+        HardwareDecodingCodecs = ["h264", "vc1", "hevc"];
         HlsAudioSeekStrategy = HlsAudioSeekStrategy.TrimCopiedAudio;
     }
 
@@ -128,7 +129,10 @@ public class EncodingOptions
     /// <summary>
     /// Gets or sets the hardware acceleration type.
     /// </summary>
-    public HardwareAccelerationType HardwareAccelerationType { get; set; }
+    /// <remarks>Défaut du build Shield : MediaCodec (G4 — encodeur HW validé 108-116 fps sonde G2).
+    /// Hors Shield (ffmpeg sans MediaCodec) : fallback logiciel automatique via SupportsEncoder.
+    /// Paramétrable depuis l'UI.</remarks>
+    public HardwareAccelerationType HardwareAccelerationType { get; set; } = HardwareAccelerationType.mediacodec;
 
     /// <summary>
     /// Gets or sets the FFmpeg path as set by the user via the UI.
