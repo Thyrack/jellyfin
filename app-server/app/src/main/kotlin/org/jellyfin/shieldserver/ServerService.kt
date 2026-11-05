@@ -297,7 +297,7 @@ class ServerService : Service() {
     )
 
     /** Exécute un cas de la matrice avec timeout + journal + fichiers de sortie. */
-    private fun executerCas(cas: MediaMuxProbe.Cas, journal: File, outDir: File) {
+    private fun executerCas(cas: MediaMuxProbe.Cas, journal: File, outDir: File, timeoutS: Long = MATRICE_TIMEOUT_S) {
         val ffmpeg = File(File(filesDir, "jf-server"), "bin/ffmpeg")
         var proc: Process? = null
         try {
@@ -315,7 +315,7 @@ class ServerService : Service() {
                     }
                 }
             }
-            val fini = proc.waitFor(MATRICE_TIMEOUT_S, TimeUnit.SECONDS)
+            val fini = proc.waitFor(timeoutS, TimeUnit.SECONDS)
             if (!fini) {
                 // ffmpeg bloqué (frame=0 du dead-lock mux HW) : destruction IMMÉDIATE,
                 // sinon le zombie fuit CPU + instances HW et entache voisins (revue).
@@ -399,14 +399,23 @@ class ServerService : Service() {
     /** Matrice mux/encodage HW exécutée DANS le service (lieu vivant hors broadcast, ANR-immune). */
     private fun executerMatriceMux(intent: Intent?) {
         val src = intent?.getStringExtra(StorageProbeReceiver.SRC_EXTRA) ?: StorageProbeReceiver.SRC_DEFAUT
+        val ffargs = intent?.getStringExtra(StorageProbeReceiver.FARGS_EXTRA)?.trim()?.takeIf { it.isNotEmpty() }
+        Log.i(TAG, "matrice : ffargs reçus = $ffargs ; timeout extra = ${intent?.getStringExtra(StorageProbeReceiver.TIMEOUT_EXTRA)}")
+        val outDir = File(DataDirSelector.RACINE_EXTERNE, "cache/transcodes")
         val journal = File(filesDir, "jf-server/matrice.log")
         thread(name = "mux-matrice", isDaemon = true) {
             try {
-                val outDir = File(DataDirSelector.RACINE_EXTERNE, "cache/transcodes")
+                // outDir : déjà construit au-dessus avant le thread (G5-B2 revue)
                 journal.appendText("== matrice mux src=$src (${Date()}) ==\n")
                 Log.i(TAG, "matrice mux : src=$src")
-                for (cas in MediaMuxProbe.matrice(src, File(outDir, "probe/live").path)) {
-                    executerCas(cas, journal, outDir)
+                if (ffargs != null) {
+                    val timeout = (intent?.getStringExtra(StorageProbeReceiver.TIMEOUT_EXTRA)?.toLongOrNull() ?: 90L).coerceIn(5L, 600L)
+                    val casUnique = MediaMuxProbe.Cas("run-custom-${timeout}s", ffargs.split(' ').map { it.trim() }.filter { it.isNotEmpty() })
+                    executerCas(casUnique, journal, outDir, timeout)
+                } else {
+                    for (cas in MediaMuxProbe.matrice(src, File(outDir, "probe/live").path)) {
+                        executerCas(cas, journal, outDir)
+                    }
                 }
                 journal.appendText("== fin matrice ==\n")
                 Log.i(TAG, "fin matrice (cf. jf-server/matrice.log)")

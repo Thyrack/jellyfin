@@ -12,6 +12,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
@@ -271,6 +272,25 @@ public class MediaInfoHelper
 
         if (streamInfo is not null)
         {
+            // G5-B2 (Shield) : pour les clients capables de lire du TS direct
+            // (profil de transcodage `ts`/`http` — apps Android/TV), forcer la route
+            // progressive si l'encodeur HW mediacodec est sélectionné : cet encodeur
+            // ne délivre que via TS continu (endurance 90 s validée on-device),
+            // les encapsulateurs HLS à frontière de segment stallent. Le web
+            // (profil hls/fmp4, incapable de jouer du TS) reste sur la route SW.
+            ApplyHwMpegtsRoute(
+                streamInfo,
+                item.MediaType == MediaType.Video ? DlnaProfileType.Video : DlnaProfileType.Audio,
+                streamInfo.PlayMethod,
+                _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType,
+                IsTsCapableClient(profile.TranscodingProfiles));
+            if (streamInfo.SubProtocol == MediaStreamProtocol.http
+                && streamInfo.Container == "ts")
+            {
+                _logger.LogInformation(
+                    "G5-B2 : transcodage vidéo route progressive TS (client ts-capable, HW mediacodec actif).");
+            }
+
             streamInfo.PlaySessionId = playSessionId;
             streamInfo.StartPositionTicks = startTimeTicks;
 
@@ -488,6 +508,77 @@ public class MediaInfoHelper
     public void NormalizeMediaSourceContainer(MediaSourceInfo mediaSource, DeviceProfile profile, DlnaProfileType type)
     {
         mediaSource.Container = StreamBuilder.NormalizeMediaSourceFormatIntoSingleContainer(mediaSource.Container, profile, type);
+    }
+
+    /// <summary>
+    /// G5-B2 (Shield) : bascule la route de transcodage vidéo vers le TS progressif
+    /// pour les clients TS-capables quand l'encodeur HW mediacodec est sélectionné.
+    /// </summary>
+    /// <param name="streamInfo">Le stream info construit par le StreamBuilder.</param>
+    /// <param name="mediaType">Type de média de l'élément lu.</param>
+    /// <param name="playMethod">Méthode de lecture retenue par le StreamBuilder.</param>
+    /// <param name="hardwareAccelerationType">Type d'accélération matérielle de la config.</param>
+    /// <param name="tsCapableClient">Vrai si le profil client a un profil de transcodage `ts`/`http` sans fallback hls/fmp4.</param>
+    public static void ApplyHwMpegtsRoute(
+        StreamInfo streamInfo,
+        DlnaProfileType mediaType,
+        PlayMethod playMethod,
+        HardwareAccelerationType hardwareAccelerationType,
+        bool tsCapableClient)
+    {
+        ArgumentNullException.ThrowIfNull(streamInfo);
+
+        if (mediaType != DlnaProfileType.Video
+            || playMethod != PlayMethod.Transcode
+            || hardwareAccelerationType != HardwareAccelerationType.mediacodec
+            || !tsCapableClient)
+        {
+            return;
+        }
+
+        // TS progressif : /videos/{id}/stream.ts — muxer mpegts continu (l'unique
+        // sortie viable de l'encodeur HW h264_mediacodec, endurance 90 s on-device).
+
+        streamInfo.SubProtocol = MediaStreamProtocol.http;
+        streamInfo.Container = "ts";
+    }
+
+    /// <summary>
+    /// Vérifie si le profil client contient le transcodage TS/http
+    /// (les applications de lecture TS progressive) sans fallback fmp4/hls.
+    /// </summary>
+    /// <param name="profiles">Liste des profils de transcodage du device client.</param>
+    /// <returns>Vrai si `ts`/`http` existe et qu'aucun `hls`/`mp4` n'est détecté.</returns>
+    public static bool IsTsCapableClient(TranscodingProfile[]? profiles)
+    {
+        if (profiles is null || profiles.Length == 0)
+        {
+            return false;
+        }
+
+        bool hasTs = false, hasHlsFmp4 = false;
+        foreach (var p in profiles)
+        {
+            if (p.Type != DlnaProfileType.Video)
+            {
+                continue;
+            }
+
+            var container = p.Container ?? string.Empty;
+            if (p.Protocol == MediaStreamProtocol.http
+                && container.Contains("ts", StringComparison.OrdinalIgnoreCase))
+            {
+                hasTs = true;
+            }
+
+            if (p.Protocol == MediaStreamProtocol.hls
+                && container.Contains("mp4", StringComparison.OrdinalIgnoreCase))
+            {
+                hasHlsFmp4 = true;
+            }
+        }
+
+        return hasTs && !hasHlsFmp4;
     }
 
     private void SetDeviceSpecificSubtitleInfo(StreamInfo info, MediaSourceInfo mediaSource, string accessToken)

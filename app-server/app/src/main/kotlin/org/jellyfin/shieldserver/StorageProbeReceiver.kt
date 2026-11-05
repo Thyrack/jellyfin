@@ -48,6 +48,11 @@ class StorageProbeReceiver : BroadcastReceiver() {
         const val ACTION_RUNFF = "org.jellyfin.shieldserver.RUNFF"
         /** Nom de l'extra contenant le chemin média source (défaut : Le.Village). */
         const val SRC_EXTRA = "src"
+        /** Nom de l'extra : args ffmpeg personnalisés (séparés par des espaces — les chemins contenant
+         *  des espaces ne sont pas supportés), pour un run unique debug. */
+        const val FARGS_EXTRA = "ffargs"
+        /** Nom de l'extra : timeout du run unique en secondes (défaut 90). */
+        const val TIMEOUT_EXTRA = "timeout_s"
         /** Chemin média par défaut pour la matrice (debug : Le.Village). */
         const val SRC_DEFAUT = "/storage/AX58U/TOSHIBA_EXT/videos/Films/Le.Village.2004.MULTi.VF2.1080p.BluRay.10.bits.AC3.5.1.x265-Winks.mkv"
         /** Plafond de chemins sondés par intent : la boucle tourne sur le thread principal. */
@@ -104,8 +109,11 @@ class StorageProbeReceiver : BroadcastReceiver() {
         if (intent.action == ACTION_COPY) copierDonnees(context, goAsync())
         else if (intent.action == ACTION_RUNFF) {
             // délégation au service (le broadcast goAsync est limité à ~60 s — la matrice dure plus)
-            context.startForegroundService(Intent(context, ServerService::class.java).setAction(ACTION_RUNFF)
-                .putExtra(SRC_EXTRA, intent.getStringExtra(SRC_EXTRA)))
+            context.startForegroundService(
+                Intent(context, ServerService::class.java).setAction(ACTION_RUNFF)
+                    .putExtra(SRC_EXTRA, intent.getStringExtra(SRC_EXTRA))
+                    .putExtra(FARGS_EXTRA, intent.getStringExtra(FARGS_EXTRA))
+                    .putExtra(TIMEOUT_EXTRA, intent.getStringExtra(TIMEOUT_EXTRA)))
         } else sonderChemins(intent)
     }
 
