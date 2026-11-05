@@ -93,16 +93,21 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
 - L'USB TOSHIBA_EXT (1,8 T, CIFS) reste réservé aux fichiers médias (lecture seule
   par Jellyfin) : jamais la base SQLite (locks SMB non fiables → corruption).
 
-### Transcodage HW MediaCodec (G4 — opérationnel)
-- Réglage actif : `HardwareAccelerationType=mediacodec` (défaut du build ; identique dans
-  l'UI web dash, dropdown « MediaCodec (Android) » ajouté au web). `HardwareDecodingCodecs`
-  intègre `hevc` ; whitelist `EncoderValidator` étendue avec `h264_mediacodec`
-  (encoders) et `hevc_mediacodec` (decoders) — hevc en SORTIE non validé on-device :
-  volontairement non whitelisté.
-- Routes validées sur device (sonde G2 + lecture réelle G4) : HEVC → décode HW
-  (`-hwaccel mediacodec -c:v hevc_mediacodec`) + encode `-c:v h264_mediacodec` ;
-  H264 → décode CPU + encode HW (meilleur débit que le décode HW) ; fallback libx264/libx265
-  automatique si l'encodeur HW indisponible.
+### Transcodage HW MediaCodec (G4-v2 — construit, HW OFF en défaut)
+- Défaut du build : **`none`** (encodeur logiciel libx264, optimum après le rebuild
+  x264 avec asm NEON ARM64). La config peut être retrournée à `mediacodec` dans l'UI
+  (dropdown « MediaCodec (Android) » ajouté au web) pour un actif de test.
+- Route candidate : **décodage CPU → encodage `-c:v h264_mediacodec`**
+  (`HardwareAccelerationType=mediacodec` on-device), gardée en whitelist — mais
+  le run réel (matrice) a prouvé l'encodeur HW **bloque dès qu'un vrai muxer est
+  branché** (mp4/fmp4/TS, 0 frame), cf. bloc « Chantier G4-v2 ».
+- Détail : décodage HW HEVC (`hevc_mediacodec`) : fonctionne (`exit=0`) mais
+  les frames HW → libx264 tombent à 7 fps (conversion userspace, `hwdownload`
+  non implémenté). À déprioriser : chantier séparé filtres + ffmpeg (G5).
+- x264 : rebuild avec **asm NEON ARM64** (`HAVE_NEON 1` en config) — l'encodage
+  logiciel de 1080p tient le temps réel, fin des saccades (stutter).
+- Fallback libx264/libx265 automatique si l'encodeur HW est indisponible
+  (`SupportsEncoder=false` ou `EnableHardwareEncoding=false`).
 - Consommation mesurée pendant lecture réelle : ffmpeg HW ≈ **1,25 cœur** (la sonde G2
   donnait ≈ 2,5 cœurs ; x264 logiciel saturerait 3-4 cœurs).
 - Limites : 4K → transcodage non temps réel (26 fps mesurés avec scale) ; HEVC 10-bit
@@ -141,6 +146,19 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   un provider natif `CryptoNative_*` maison via BoringSSL système (libcrypto/libssl) ; providers limités au client
   TLS (pas de HTTPS serveur local, pas de client-cert) ; RSA/ECDSA/DSA/PKCS7/OCSP/ChaCha en échec propre.
   Canari automatique : cycle « Update Plugins » (~4 s, sans [ERR] manifest). Voir `deployment/apk-android/tlsprovider/`.
+
+### Chantier G4-v2 — décodage/encodage HW : état factuel (matrice run réel)
+- Encodage HW `h264_mediacodec` : **112-116 fps en `-f null`**, mais **0 frame dès qu'un
+  vrai muxer est branché** (mp4/fmp4/hls-TS testés séparément via le processus app) —
+  bug du build jellyfin-ffmpeg v7.1.3-6 ; Jellyfin enclenche donc une roue infinie avec HW.
+- Décodage HW `hevc_mediacodec` : fonctionne (`exit=0`) mais les frames HW alimentant
+  libx264 tombent à **7 fps** (buffer copy userspace) ; `hwdownload` échoue
+  (`Function not implemented`) sur AV_PIX_FMT_MEDIACODEC.
+- Mode stable actuel : **HW OFF** (`HardwareAccelerationType=none`) — lecture/transcodage
+  libx264 corrects fluides sur du 1080p (4K sous temps réel).
+- Piste G5 pour réactiver le HW : le ffmpeg de Termux ne contient pas mediacodec
+  (vérifié) ; réactiver exigera soit un patch jellyfin-ffmpeg (mux + hwdownload),
+  soit une source alternative compilée avec mediacodec + surface pipeline.
 
 ### Veille anti-boucle ffmpeg (HW MediaCodec)
 - Constat run réel : **deux jobs HW MediaCodec concomitants** (client à deux profils de

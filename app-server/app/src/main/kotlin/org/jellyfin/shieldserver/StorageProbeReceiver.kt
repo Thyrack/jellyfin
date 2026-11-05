@@ -44,17 +44,14 @@ class StorageProbeReceiver : BroadcastReceiver() {
         const val ACTION = "org.jellyfin.shieldserver.PROBE_STORAGE"
         /** Action ADB déclenchant la migration datadir+cache vers le volume externe. */
         const val ACTION_COPY = "org.jellyfin.shieldserver.COPY_DATA"
+        /** Action ADB exécutant la matrice de diagnostic mux/encodage HW (G4-v2). */
+        const val ACTION_RUNFF = "org.jellyfin.shieldserver.RUNFF"
+        /** Nom de l'extra contenant le chemin média source (défaut : Le.Village). */
+        const val SRC_EXTRA = "src"
+        /** Chemin média par défaut pour la matrice (debug : Le.Village). */
+        const val SRC_DEFAUT = "/storage/AX58U/TOSHIBA_EXT/videos/Films/Le.Village.2004.MULTi.VF2.1080p.BluRay.10.bits.AC3.5.1.x265-Winks.mkv"
         /** Plafond de chemins sondés par intent : la boucle tourne sur le thread principal. */
         private const val MAX_CHEMINS = 10
-    }
-
-    /** Répartiteur : sonde de lecture ou migration datadir. */
-    override fun onReceive(context: Context, intent: Intent) {
-        if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
-            Log.w(TAGLOG, "IGNORÉ (build non debuggable)")
-            return
-        }
-        if (intent.action == ACTION_COPY) copierDonnees(context, goAsync()) else sonderChemins(intent)
     }
 
     /** Migration data+cache : copie sur le volume large avec journalisation de progression.
@@ -92,12 +89,24 @@ class StorageProbeReceiver : BroadcastReceiver() {
                 } else {
                     Log.e(TAGLOG, "migration incomplète → PAS de sentinelle (le datadir externe restera ignoré)")
                 }
-            } catch (e: Exception) {
-                Log.e(TAGLOG, "migration : ${e.javaClass.simpleName} ${e.message ?: ""}")
             } finally {
                 resultat.finish()
             }
         }
+    }
+
+    /** Répartiteur : sonde de lecture ou migration datadir. */
+    override fun onReceive(context: Context, intent: Intent) {
+        if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
+            Log.w(TAGLOG, "IGNORÉ (build non debuggable)")
+            return
+        }
+        if (intent.action == ACTION_COPY) copierDonnees(context, goAsync())
+        else if (intent.action == ACTION_RUNFF) {
+            // délégation au service (le broadcast goAsync est limité à ~60 s — la matrice dure plus)
+            context.startForegroundService(Intent(context, ServerService::class.java).setAction(ACTION_RUNFF)
+                .putExtra(SRC_EXTRA, intent.getStringExtra(SRC_EXTRA)))
+        } else sonderChemins(intent)
     }
 
     /** Sonde de lecture : liste chaque chemin (au plus 10, séparés par ',') en logcat. */

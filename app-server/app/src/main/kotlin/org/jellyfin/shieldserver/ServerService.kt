@@ -16,6 +16,9 @@ import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.Date
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /** Service gère l'extraction des assets puis lance le serveur .NET, avec redémarrage en backoff. */
@@ -36,6 +39,14 @@ class ServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground()
+        if (intent?.action == StorageProbeReceiver.ACTION_RUNFF) {
+            if (!matriceEnCours.compareAndSet(false, true)) {
+                Log.i(TAG, "matrice mux déjà en cours")
+                return START_STICKY
+            }
+            executerMatriceMux(intent)
+            return START_STICKY
+        }
         if (running) {
             return START_STICKY          // déjà en route (process OU extraction) : pas de second process — revue
         }
@@ -285,6 +296,45 @@ class ServerService : Service() {
         "TMPDIR" to serverTempDir(filesDir).path,
     )
 
+    /** Exécute un cas de la matrice avec timeout + journal + fichiers de sortie. */
+    private fun executerCas(cas: MediaMuxProbe.Cas, journal: File, outDir: File) {
+        val ffmpeg = File(File(filesDir, "jf-server"), "bin/ffmpeg")
+        var proc: Process? = null
+        try {
+            journal.appendText("run ${cas.nom} …\n")
+            Log.i(TAG, "run ${cas.nom}")
+            proc = ProcessBuilder(listOf(ffmpeg.path) + cas.args)
+                .redirectErrorStream(true)
+                .start()
+            val queue = ArrayDeque<String>()
+            val lecteur = thread(name = "mux-reader", isDaemon = true) {
+                proc.inputStream.bufferedReader().forEachLine { ligne ->
+                    if (ligne.contains("frame=") || ligne.startsWith("[")) {
+                        if (queue.size >= 3) queue.removeFirst()
+                        queue.addLast(ligne.take(160))
+                    }
+                }
+            }
+            val fini = proc.waitFor(MATRICE_TIMEOUT_S, TimeUnit.SECONDS)
+            if (!fini) {
+                // ffmpeg bloqué (frame=0 du dead-lock mux HW) : destruction IMMÉDIATE,
+                // sinon le zombie fuit CPU + instances HW et entache voisins (revue).
+                proc.destroyForcibly()
+                journal.appendText("STALLED (> $MATRICE_TIMEOUT_S s) — process détruit ;\n")
+            } else {
+                journal.appendText("exit=${proc.exitValue()} ;\n")
+            }
+            lecteur.join(1_000) // le lecteur mourra sur EOF après la destruction du process
+            journal.appendText("dernière stat : ${queue.lastOrNull() ?: "aucune"}\n")
+            journal.appendText("fichiers : ${outDir.listFiles()?.filter { it.name.startsWith("probe") }
+                ?.joinToString(", ") { it.name } ?: "(vide)"}\n")
+        } catch (e: Exception) {
+            proc?.destroyForcibly()
+            journal.appendText("exception : ${e.javaClass.simpleName} ${e.message ?: ""}\n")
+            Log.e(TAG, "run ${cas.nom} : ${e.javaClass.simpleName} ${e.message ?: ""}")
+        }
+    }
+
     /** Intervalle d'échantillonnage de la veille (décision basée sur ce délai réel). */
     private val INTERVALLE_VEILLE_S = 2.0
 
@@ -346,6 +396,29 @@ class ServerService : Service() {
         return pids
     }
 
+    /** Matrice mux/encodage HW exécutée DANS le service (lieu vivant hors broadcast, ANR-immune). */
+    private fun executerMatriceMux(intent: Intent?) {
+        val src = intent?.getStringExtra(StorageProbeReceiver.SRC_EXTRA) ?: StorageProbeReceiver.SRC_DEFAUT
+        val journal = File(filesDir, "jf-server/matrice.log")
+        thread(name = "mux-matrice", isDaemon = true) {
+            try {
+                val outDir = File(DataDirSelector.RACINE_EXTERNE, "cache/transcodes")
+                val ffmpeg = File(File(filesDir, "jf-server"), "bin/ffmpeg")
+                journal.appendText("== matrice mux src=$src (${Date()}) ==\n")
+                Log.i(TAG, "matrice mux : src=$src")
+                for (cas in MediaMuxProbe.matrice(ffmpeg.path, src, File(outDir, "probe/live").path)) {
+                    executerCas(cas, journal, outDir)
+                }
+                journal.appendText("== fin matrice ==\n")
+                Log.i(TAG, "fin matrice (cf. jf-server/matrice.log)")
+            } catch (e: Exception) {
+                Log.e(TAG, "matrice : ${e.javaClass.simpleName} ${e.message ?: ""}")
+            } finally {
+                matriceEnCours.set(false)
+            }
+        }
+    }
+
     private fun notifyRunning() {
         val n = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Jellyfin Server Shield")
@@ -368,6 +441,10 @@ class ServerService : Service() {
         private const val TAG = "jf-server"
         private const val CHANNEL_ID = "jf-server"
         private const val NOTIF_ID = 1
+        /** Anti-doublon de la matrice de diagnostic mux (un seul exécutant à la fois). */
+        private var matriceEnCours = AtomicBoolean(false)
+        /** Délai maximal d'un run de la matrice de diagnostic (45 s). */
+        private const val MATRICE_TIMEOUT_S = 45L
         const val STAMP_ASSET = "server/.stamp"
         /** PID du process hôte hébergeant `dotnet` (null = aucun) ; utilisé par le récepteur COPY_DATA comme garde anti copie à chaud (marque de vie posée/retirée au cycle de vie du service, pas d'API système stale). */
         @Volatile var pidActif: Int? = null

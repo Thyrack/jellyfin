@@ -327,16 +327,41 @@ public class EncodingHelperTests
         var encoder = new Mock<IMediaEncoder>();
         encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
         var state = BuildVideoState("hevc");
-        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, new EncodingOptions());
+        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, MediacodecOptions());
 
         Assert.Equal("h264_mediacodec", args);
     }
 
     [Fact]
-    public void GetVideoEncoder_Mediacodec_FallsBackToX264WhenUnavailable()
+    public void GetVideoEncoder_Mediacodec_EncoderAbsent_FallbackX264()
+    {
+        // Mock SANS SupportsEncoder → SupportsEncoder=false → fallback même avec HW active
+        var state = BuildVideoState("hevc");
+        var args = CreateHelper().GetVideoEncoder(state, MediacodecOptions());
+
+        Assert.Equal("libx264", args);
+    }
+
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_EncoderAbsent_FallbackX265()
     {
         var state = BuildVideoState("hevc");
-        var args = CreateHelper().GetVideoEncoder(state, new EncodingOptions());
+        state.OutputVideoCodec = "hevc";
+        var args = CreateHelper().GetVideoEncoder(state, MediacodecOptions());
+
+        Assert.Equal("libx265", args);
+    }
+
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_EncodageHwDesactive_Fallback()
+    {
+        // Encodeur mocké DISPONIBLE mais EnableHardwareEncoding=false → x264 (groupe d'option)
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc");
+        var options = MediacodecOptions();
+        options.EnableHardwareEncoding = false;
+        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, options);
 
         Assert.Equal("libx264", args);
     }
@@ -350,7 +375,10 @@ public class EncodingHelperTests
         encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
         var state = BuildVideoState("hevc");
         state.VideoStream.PixelFormat = "yuv420p";
-        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+        // Route testée avec l'option explicite : le défaut G4 v1.1 la laisse INACTIVE
+        // (décodage HW mediacodec + filtres SW Jellyfin ne sortent pas de segments sans hwdownload).
+        var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.mediacodec, HardwareDecodingCodecs = ["h264", "vc1", "hevc"] };
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, options);
 
         Assert.Contains("-hwaccel mediacodec", args, StringComparison.Ordinal);
         Assert.Contains("-c:v hevc_mediacodec", args, StringComparison.Ordinal);
@@ -365,7 +393,8 @@ public class EncodingHelperTests
         encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
         var state = BuildVideoState("hevc", bitDepth: 10);
         state.VideoStream.PixelFormat = "yuv420p10le";
-        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+        var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.mediacodec, HardwareDecodingCodecs = ["h264", "vc1", "hevc"] };
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, options);
 
         Assert.Contains("-c:v hevc_mediacodec", args, StringComparison.Ordinal);
     }
@@ -384,11 +413,16 @@ public class EncodingHelperTests
     }
 
     [Fact]
-    public void GetInputVideoHwaccelArgs_Mediacodec_WhenHwabsent_EmptyArgs()
+    public void GetInputVideoHwaccelArgs_MediacodecHevc_DefautV111_Vide()
     {
-        // Mock par défaut : SupportsHwaccel/SupportsDecoder = false → pas d'args HW
+        // DEFAULT build Shield v1.1 : HardwareDecodingCodecs SANS hevc → pas de décodage HW HEVC
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
         var state = BuildVideoState("hevc");
-        var args = CreateHelper().GetInputVideoHwaccelArgs(state, new EncodingOptions());
+        state.VideoStream.PixelFormat = "yuv420p";
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
 
         Assert.Equal(string.Empty, args);
     }
@@ -403,7 +437,7 @@ public class EncodingHelperTests
         encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
         var state = BuildVideoState("hevc", bitDepth: 12);
         state.VideoStream.PixelFormat = "yuv444p10le";
-        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions());
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, MediacodecOptions());
 
         Assert.Equal(string.Empty, args);
     }
@@ -417,7 +451,8 @@ public class EncodingHelperTests
         encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
         var state = BuildVideoState("hevc", bitDepth: 10);
         state.VideoStream.PixelFormat = "yuv420p10le";
-        var options = new EncodingOptions { EnableDecodingColorDepth10Hevc = false };
+        var options = MediacodecOptions();
+        options.EnableDecodingColorDepth10Hevc = false;
         var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, options);
 
         Assert.Equal(string.Empty, args);
@@ -505,6 +540,11 @@ public class EncodingHelperTests
             configurationManager.Object,
             pathManager.Object);
     }
+
+    private static EncodingOptions MediacodecOptions() => new()
+    {
+        HardwareAccelerationType = HardwareAccelerationType.mediacodec,
+    };
 
     private static EncodingJobInfo BuildVideoState(string videoCodec, int? bitDepth = null)
     {

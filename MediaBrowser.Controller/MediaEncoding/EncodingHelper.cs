@@ -6600,11 +6600,13 @@ namespace MediaBrowser.Controller.MediaEncoding
         /// <param name="options">Encoding options.</param>
         /// <param name="videoStream">The video stream.</param>
         /// <param name="bitDepth">The color bit depth of the video stream.</param>
-        /// <returns>HW decoder args (G2-validated route: 108 fps), empty string if not applicable.</returns>
-        /// <remarks>G4 (Shield) : HEVC uniquement (route <c>-hwaccel mediacodec -c:v hevc_mediacodec</c> validée
-        /// par la sonde G2) ; h264 reste décodé en CPU (route dcpu-enc-mc 116 fps, plus rapide qu'un décode HW).
-        /// PixelFormat limité à 4:2:0 (yuv420p / yuv420p10le) — le décodeur Shield ne couvre que Main/Main10 ;
-        /// 10 bits : le décodeur MediaCodec ajuste la sortie (NV12) — vérifié au run G4.</remarks>
+        /// <returns>HW decoder args (route mediacodec, INACTIVE by default v1.1), empty string if not applicable.</returns>
+        /// <remarks>G4 v1.1 (Shield) : route techniquement implémentée mais <b>inactive par défaut</b> —
+        /// le décodage HW mediacodec combiné aux filtres SW de Jellyfin (scale/format sans hwdownload)
+        /// ne sort aucun segment HLS (constat run réel : init seul + roue infinie web). Le décode
+        /// CPU alimente l'encodeur HW (route dcpu-enc-mc validée 116 fps). Réactivation possible
+        /// via HardwareDecodingCodecs + hevc APRES traitement de la chaîne de filtres (G4-bis).
+        /// PixelFormat limité à 4:2:0 (yuv420p / yuv420p10le) — le décodeur Shield ne couvre que Main/Main10.</remarks>
         private string GetMediacodecVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
         {
             var isHevc = string.Equals(videoStream.Codec, "hevc", StringComparison.OrdinalIgnoreCase)

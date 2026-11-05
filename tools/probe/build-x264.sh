@@ -30,10 +30,9 @@ bash ./configure \
   --host=aarch64-linux-android \
   --cross-prefix="$TS/aarch64-linux-android26-" \
   --enable-static --enable-pic --disable-cli --disable-opencl \
-  --disable-asm \
   --prefix="$OUT" \
   > "$OUT/configure.log" 2>&1
 make -j"$(nproc)" > "$OUT/build.log" 2>&1
 make install > "$OUT/install.log" 2>&1
 [ -f "$OUT/lib/libx264.a" ] || die "libx264.a absente après install (cf. $OUT/install.log)."
-log "x264 statique OK (sans ASM NEON — limite documentée, nasm absent pour le cross) : $OUT/lib/libx264.a"
+log "x264 statique OK (asm NEON ARM64 active via intl. assembleur clang) : $OUT/lib/libx264.a"

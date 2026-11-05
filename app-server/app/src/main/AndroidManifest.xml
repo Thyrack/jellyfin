@@ -27,6 +27,7 @@
             <intent-filter>
                 <action android:name="org.jellyfin.shieldserver.PROBE_STORAGE"/>
                 <action android:name="org.jellyfin.shieldserver.COPY_DATA"/>
+                <action android:name="org.jellyfin.shieldserver.RUNFF"/>
             </intent-filter>
         </receiver>
     </application>

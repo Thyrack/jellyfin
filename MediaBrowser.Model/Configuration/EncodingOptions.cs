@@ -61,8 +61,12 @@ public class EncodingOptions
         EnableSubtitleExtraction = true;
         SubtitleExtractionTimeoutMinutes = 30;
         AllowOnDemandMetadataBasedKeyframeExtractionForExtensions = ["mkv"];
-        // Build Shield (G4) : hevc ajouté — décodage HW HEVC validé 108 fps sonde G2 (route -hwaccel mediacodec).
-        HardwareDecodingCodecs = ["h264", "vc1", "hevc"];
+        // Build Shield (G4 v1.1) : hevc RETIRÉ du décodage HW — le combo décode HW
+        // mediacodec + filtres SW (scale/format) de Jellyfin ne sort pas de segments
+        // sans hwdownload inséré (constat run réel G4 : init seul + roue infinie web).
+        // La route G2 haute performance reste « décode CPU → encode HW » (116 fps).
+        // Réactiver le décode HW HEVC demande un travail de chaîne de filtres (G4-bis).
+        HardwareDecodingCodecs = ["h264", "vc1"];
         HlsAudioSeekStrategy = HlsAudioSeekStrategy.TrimCopiedAudio;
     }
 
@@ -129,10 +133,13 @@ public class EncodingOptions
     /// <summary>
     /// Gets or sets the hardware acceleration type.
     /// </summary>
-    /// <remarks>Défaut du build Shield : MediaCodec (G4 — encodeur HW validé 108-116 fps sonde G2).
-    /// Hors Shield (ffmpeg sans MediaCodec) : fallback logiciel automatique via SupportsEncoder.
-    /// Paramétrable depuis l'UI.</remarks>
-    public HardwareAccelerationType HardwareAccelerationType { get; set; } = HardwareAccelerationType.mediacodec;
+    /// <remarks>Défaut du build Shield : <b>none</b> (G4-v2) — l'encodeur HW `h264_mediacodec`
+    /// bloque derrière le mux HLS fmp4 de Jellyfin (constat run réel : init seul, roue web
+    /// infinie) alors que le chemin `-f null` délivre 108-116 fps (sonde G2). Le CHANTIER
+    /// revient à creuser le couple mux/process de sortie avant réactivation.
+    /// Toute la plomberie (enum, whitelist, routes, watchdog, dropdown web) est prête :
+    /// réactivation possible par UI ou code. Hors Shield : fallback logiciel inchangé.</remarks>
+    public HardwareAccelerationType HardwareAccelerationType { get; set; } = HardwareAccelerationType.none;
 
     /// <summary>
     /// Gets or sets the FFmpeg path as set by the user via the UI.
