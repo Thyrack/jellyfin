@@ -117,9 +117,10 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
 
 ### Limitations MVP documentées
 - ffmpeg embarqué = build « server-live » (Lot LiveTV) : jellyfin-ffmpeg v7.1.3-6 + réseau
-  http/https (openssl statique) + **libx264** (sans ASM NEON : nasm absent du cross — transcodage
-  1080p limité par le CPU Tegra X1) + **h264_mediacodec** enc/dec (présent ; le mapping HW auto
-  dans Jellyfin reste le chantier G4). Pré-requis build : `tools/probe/build-openssl.sh`,
+  http/https (openssl statique) + **libx264 avec asm NEON ARM64** (`HAVE_NEON 1` : nasm
+  n'est requis que pour l'asm x86 ; le build arm64 utilise l'assembleur intégré clang) +
+  **h264_mediacodec** enc/dec (présent ; le mapping auto est livré — usage HW bloqué au
+  muxer, cf. bloc G4-v2). Pré-requis build : `tools/probe/build-openssl.sh`,
   `build-x264.sh`, `build-ffmpeg.sh server-live` (pkgconf local `/home/bruno/tools/pkgconf`,
   cf. scripts). Le ffmpeg « sonde » (sans réseau) ne sert plus qu'aux benchmarks G2.
 - LiveTV/IPTV : les chaînes https fonctionnent (preuve ffprobe on-device) ; certains flux du
@@ -154,8 +155,9 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
 - Décodage HW `hevc_mediacodec` : fonctionne (`exit=0`) mais les frames HW alimentant
   libx264 tombent à **7 fps** (buffer copy userspace) ; `hwdownload` échoue
   (`Function not implemented`) sur AV_PIX_FMT_MEDIACODEC.
-- Mode stable actuel : **HW OFF** (`HardwareAccelerationType=none`) — lecture/transcodage
-  libx264 corrects fluides sur du 1080p (4K sous temps réel).
+- Mode stable actuel : **HW OFF** (`HardwareAccelerationType=none`) —
+  **SW transcodage avec x264 asm NEON : 33 fps / speed=1.08× (temps réel mesuré
+  on-device, incl. fmp4 HLS segments)** ; décodage CPU du HEVC consomme 2-3 cœurs.
 - Piste G5 pour réactiver le HW : le ffmpeg de Termux ne contient pas mediacodec
   (vérifié) ; réactiver exigera soit un patch jellyfin-ffmpeg (mux + hwdownload),
   soit une source alternative compilée avec mediacodec + surface pipeline.
