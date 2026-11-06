@@ -34,7 +34,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void VideoTranscode_Mediacodec_TsCapable_ForceProgressifTs()
     {
         var si = HlsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
 
         Assert.Equal(MediaStreamProtocol.http, si.SubProtocol);
         Assert.Equal("ts", si.Container);
@@ -44,7 +44,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void VideoTranscode_Mediacodec_TsIncapable_Inchangé()
     {
         var si = HlsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, false);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, false, null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -54,7 +54,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void VideoTranscode_HwTypeNonMediacodec_Inchangé()
     {
         var si = HlsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.none, true);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.none, true, null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -65,7 +65,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     {
         var si = HlsVideoStream();
         si.PlayMethod = PlayMethod.DirectPlay;
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.DirectPlay, HardwareAccelerationType.mediacodec, true);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.DirectPlay, HardwareAccelerationType.mediacodec, true, null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -82,7 +82,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
             Container = null,
             PlayMethod = PlayMethod.Transcode
         };
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Audio, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Audio, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -92,11 +92,23 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void Detection_ProfilTsSansFmp4_EstTsCapable()
     {
         var profiles = new[] { Profil(DlnaProfileType.Video, MediaStreamProtocol.http, "ts") };
-        Assert.True(MediaInfoHelper.IsTsCapableClient(profiles));
+        Assert.True(MediaInfoHelper.IsTsCapableClient(profiles, "Jellyfin for Android"));
     }
 
     [Fact]
-    public static void Detection_ProfilTsPlusFmp4_NonTsCapable()
+    public static void Detection_AppNatif_TsPlusFmp4_EstTsCapable()
+    {
+        // une app native (ExoPlayer) avec fallback fmp4 reste TS-capable
+        var profiles = new[]
+        {
+            Profil(DlnaProfileType.Video, MediaStreamProtocol.http, "ts"),
+            Profil(DlnaProfileType.Video, MediaStreamProtocol.hls, "mp4")
+        };
+        Assert.True(MediaInfoHelper.IsTsCapableClient(profiles, "Jellyfin for Android"));
+    }
+
+    [Fact]
+    public static void Detection_WebExcluParNomClient()
     {
         // le web standard : profil ts/http de fallback + profil fmp4/hls → x264-NEON fluidité
         var profiles = new[]
@@ -104,20 +116,23 @@ public static class MediaInfoHelperHwMpegtsRouteTests
             Profil(DlnaProfileType.Video, MediaStreamProtocol.http, "ts"),
             Profil(DlnaProfileType.Video, MediaStreamProtocol.hls, "mp4")
         };
-        Assert.False(MediaInfoHelper.IsTsCapableClient(profiles));
+        Assert.False(MediaInfoHelper.IsTsCapableClient(profiles, "Jellyfin Web")); // exclu par le nom, pas par le profil
     }
 
     [Fact]
     public static void Detection_ProfilVide_NonTsCapable()
     {
-        Assert.False(MediaInfoHelper.IsTsCapableClient(Array.Empty<TranscodingProfile>()));
-        Assert.False(MediaInfoHelper.IsTsCapableClient(null));
+        Assert.False(MediaInfoHelper.IsTsCapableClient(Array.Empty<TranscodingProfile>(), "Jellyfin for Android"));
+        Assert.False(MediaInfoHelper.IsTsCapableClient(null, "Jellyfin for Android"));
+        // le web est exclu par le nom, même avec profil ts :
+        Assert.False(MediaInfoHelper.IsTsCapableClient(
+            new[] { Profil(DlnaProfileType.Video, MediaStreamProtocol.http, "ts") }, "Jellyfin Web"));
     }
 
     [Fact]
-    public static void Detection_ContainerTsMpegts_EstTsCapable()
+    public static void Detection_AppNatif_ContainerTs_EstTsCapable()
     {
         var profiles = new[] { Profil(DlnaProfileType.Video, MediaStreamProtocol.http, "ts,mpegts") };
-        Assert.True(MediaInfoHelper.IsTsCapableClient(profiles));
+        Assert.True(MediaInfoHelper.IsTsCapableClient(profiles, "Jellyfin Android TV"));
     }
 }

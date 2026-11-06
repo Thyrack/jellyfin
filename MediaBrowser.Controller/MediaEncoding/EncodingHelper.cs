@@ -215,7 +215,12 @@ namespace MediaBrowser.Controller.MediaEncoding
             // Only use alternative encoders for video files.
             // When using concat with folder rips, if the mfx session fails to initialize, ffmpeg will be stuck retrying and will not exit gracefully
             // Since transcoding of folder rips is experimental anyway, it's not worth adding additional variables such as this.
-            if (state.VideoType == VideoType.VideoFile)
+            // G5-C (Shield) : l'encodeur HW `*_mediacodec` ne délivre des paquets que
+            // via les jobs progressifs (route /stream.ts des apps TS-capables) — les
+            // jobs HLS stallent à frame=0 (matrice RUNFF, bug amont jellyfin-ffmpeg).
+            // Le web (hls fmp4) garde l'encodeur SW x264-NEON fluide.
+            if (state.VideoType == VideoType.VideoFile
+                && state.TranscodingType == TranscodingJobType.Progressive)
             {
                 var hwType = encodingOptions.HardwareAccelerationType;
 

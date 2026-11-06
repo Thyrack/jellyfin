@@ -278,12 +278,28 @@ public class MediaInfoHelper
             // ne délivre que via TS continu (endurance 90 s validée on-device),
             // les encapsulateurs HLS à frontière de segment stallent. Le web
             // (profil hls/fmp4, incapable de jouer du TS) reste sur la route SW.
+            var tsCapable = IsTsCapableClient(profile.TranscodingProfiles, claimsPrincipal.GetClient());
+            var profilsClient = profile.TranscodingProfiles
+                .Where(i => i.Type == DlnaProfileType.Video)
+                .Select(i => $"{i.Protocol}:{i.Container}")
+                .ToList();
+            _logger.LogDebug(
+                "G5-B2 debug : client={Client} ; device={Device} ; profilName={PName} ; profilId={PId} ; profils=[{Profils}] ; tsCapable={TsCapable} ; subProtocol={Proto}",
+                claimsPrincipal.GetClient() ?? "(aucun)",
+                claimsPrincipal.GetDevice() ?? "(aucun)",
+                profile.Name ?? "(aucun)",
+                profile.Id?.ToString() ?? "(aucun)",
+                string.Join(", ", profilsClient),
+                tsCapable,
+                streamInfo.SubProtocol);
             ApplyHwMpegtsRoute(
                 streamInfo,
                 item.MediaType == MediaType.Video ? DlnaProfileType.Video : DlnaProfileType.Audio,
                 streamInfo.PlayMethod,
                 _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType,
-                IsTsCapableClient(profile.TranscodingProfiles));
+                tsCapable,
+                _logger);
+
             if (streamInfo.SubProtocol == MediaStreamProtocol.http
                 && streamInfo.Container == "ts")
             {
@@ -518,13 +534,15 @@ public class MediaInfoHelper
     /// <param name="mediaType">Type de média de l'élément lu.</param>
     /// <param name="playMethod">Méthode de lecture retenue par le StreamBuilder.</param>
     /// <param name="hardwareAccelerationType">Type d'accélération matérielle de la config.</param>
-    /// <param name="tsCapableClient">Vrai si le profil client a un profil de transcodage `ts`/`http` sans fallback hls/fmp4.</param>
+    /// <param name="tsCapableClient">Vrai si le profil client a un profil de transcodage `ts`/`http`.</param>
+    /// <param name="log">Le logger de l'instance (diagnostic de route).</param>
     public static void ApplyHwMpegtsRoute(
         StreamInfo streamInfo,
         DlnaProfileType mediaType,
         PlayMethod playMethod,
         HardwareAccelerationType hardwareAccelerationType,
-        bool tsCapableClient)
+        bool tsCapableClient,
+        ILogger? log)
     {
         ArgumentNullException.ThrowIfNull(streamInfo);
 
@@ -533,6 +551,12 @@ public class MediaInfoHelper
             || hardwareAccelerationType != HardwareAccelerationType.mediacodec
             || !tsCapableClient)
         {
+            log?.LogDebug(
+                "G5-B2 debug : PAS de bascule ; mediaType={MT} ; playMethod={PM} ; HW={HW} ; tsCapable={TS}",
+                mediaType,
+                playMethod,
+                hardwareAccelerationType,
+                tsCapableClient);
             return;
         }
 
@@ -544,41 +568,32 @@ public class MediaInfoHelper
     }
 
     /// <summary>
-    /// Vérifie si le profil client contient le transcodage TS/http
-    /// (les applications de lecture TS progressive) sans fallback fmp4/hls.
+    /// Vérifie si le client est capable de jouer un flux TS progressif : ce sont les
+    /// applications natives Android (ExoPlayer, extracteur TS intégré). Le client web
+    /// (hls.js → MSE fmp4) est exclu : il ne sait pas jouer un TS brut.
     /// </summary>
     /// <param name="profiles">Liste des profils de transcodage du device client.</param>
-    /// <returns>Vrai si `ts`/`http` existe et qu'aucun `hls`/`mp4` n'est détecté.</returns>
-    public static bool IsTsCapableClient(TranscodingProfile[]? profiles)
+    /// <param name="clientName">Nom du client récupéré du claim d'authentification.</param>
+    /// <returns>Vrai si le client est une app native (≠ web) avec un profil vidéo `ts`.</returns>
+    public static bool IsTsCapableClient(TranscodingProfile[]? profiles, string? clientName)
     {
+        // Le web (hls.js, MSE fmp4) ne sait pas jouer un TS brut progressif :
+        // seules les apps natives (ExoPlayer) recevront la route TS.
+        if (clientName is not null
+            && clientName.StartsWith("Jellyfin Web", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         if (profiles is null || profiles.Length == 0)
         {
             return false;
         }
 
-        bool hasTs = false, hasHlsFmp4 = false;
-        foreach (var p in profiles)
-        {
-            if (p.Type != DlnaProfileType.Video)
-            {
-                continue;
-            }
-
-            var container = p.Container ?? string.Empty;
-            if (p.Protocol == MediaStreamProtocol.http
-                && container.Contains("ts", StringComparison.OrdinalIgnoreCase))
-            {
-                hasTs = true;
-            }
-
-            if (p.Protocol == MediaStreamProtocol.hls
-                && container.Contains("mp4", StringComparison.OrdinalIgnoreCase))
-            {
-                hasHlsFmp4 = true;
-            }
-        }
-
-        return hasTs && !hasHlsFmp4;
+        return profiles.Any(p => p.Type == DlnaProfileType.Video
+            && (p.Protocol == MediaStreamProtocol.http || p.Protocol == MediaStreamProtocol.hls)
+            && !string.IsNullOrEmpty(p.Container)
+            && p.Container.Contains("ts", StringComparison.OrdinalIgnoreCase));
     }
 
     private void SetDeviceSpecificSubtitleInfo(StreamInfo info, MediaSourceInfo mediaSource, string accessToken)

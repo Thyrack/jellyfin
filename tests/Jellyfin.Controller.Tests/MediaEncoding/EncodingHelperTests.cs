@@ -546,7 +546,53 @@ public class EncodingHelperTests
         HardwareAccelerationType = HardwareAccelerationType.mediacodec,
     };
 
-    private static EncodingJobInfo BuildVideoState(string videoCodec, int? bitDepth = null)
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_JobHls_FallbackLibx264()
+    {
+        // le web (hls fmp4) ne reçoit jamais l'encodeur HW : le mux fmp4 stalle
+        // l'encodeur mediacodec (matrice RUNFF, frame=0) → fallback SW x264-NEON
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc", null, TranscodingJobType.Hls);
+        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, MediacodecOptions());
+
+        Assert.Equal("libx264", args);
+    }
+
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_JobProgressif_UsesHwEncoder()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc", null, TranscodingJobType.Progressive);
+        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, MediacodecOptions());
+
+        Assert.Equal("h264_mediacodec", args);
+    }
+
+    [Fact]
+    public void GetVideoEncoder_Mediacodec_JobProgressif_HwAbsent_FallbackLibx264()
+    {
+        var state = BuildVideoState("hevc", null, TranscodingJobType.Progressive);
+        var args = CreateHelper().GetVideoEncoder(state, MediacodecOptions());
+
+        Assert.Equal("libx264", args);
+    }
+
+    [Fact]
+    public void GetVideoEncoder_None_JobProgressif_FallbackLibx264()
+    {
+        // le défaut HW=none : le route progressive reste SW
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc", null, TranscodingJobType.Progressive);
+        var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.none };
+        var args = CreateHelper(encoder.Object).GetVideoEncoder(state, options);
+
+        Assert.Equal("libx264", args);
+    }
+
+    private static EncodingJobInfo BuildVideoState(string videoCodec, int? bitDepth = null, TranscodingJobType jobType = TranscodingJobType.Progressive)
     {
         var video = new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = videoCodec, Width = 1920, Height = 1080 };
         if (bitDepth is not null)
@@ -556,7 +602,7 @@ public class EncodingHelperTests
 
         var audio = new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "ac3", Channels = 6 };
 
-        return new EncodingJobInfo(TranscodingJobType.Progressive)
+        return new EncodingJobInfo(jobType)
         {
             MediaSource = new MediaSourceInfo
             {
