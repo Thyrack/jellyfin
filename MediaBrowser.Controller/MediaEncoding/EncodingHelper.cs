@@ -201,26 +201,32 @@ namespace MediaBrowser.Controller.MediaEncoding
         [GeneratedRegex(@"\s+")]
         private static partial Regex WhiteSpaceRegex();
 
-        public string GetH264Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
-            => GetH26xOrAv1Encoder("libx264", "h264", state, encodingOptions);
+        public string GetH264Encoder(EncodingJobInfo state, EncodingOptions encodingOptions, string segmentContainer = null)
+            => GetH26xOrAv1Encoder("libx264", "h264", state, encodingOptions, segmentContainer);
 
-        public string GetH265Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
-            => GetH26xOrAv1Encoder("libx265", "hevc", state, encodingOptions);
+        public string GetH265Encoder(EncodingJobInfo state, EncodingOptions encodingOptions, string segmentContainer = null)
+            => GetH26xOrAv1Encoder("libx265", "hevc", state, encodingOptions, segmentContainer);
 
-        public string GetAv1Encoder(EncodingJobInfo state, EncodingOptions encodingOptions)
-            => GetH26xOrAv1Encoder("libsvtav1", "av1", state, encodingOptions);
+        public string GetAv1Encoder(EncodingJobInfo state, EncodingOptions encodingOptions, string segmentContainer = null)
+            => GetH26xOrAv1Encoder("libsvtav1", "av1", state, encodingOptions, segmentContainer);
 
-        private string GetH26xOrAv1Encoder(string defaultEncoder, string hwEncoder, EncodingJobInfo state, EncodingOptions encodingOptions)
+        private string GetH26xOrAv1Encoder(string defaultEncoder, string hwEncoder, EncodingJobInfo state, EncodingOptions encodingOptions, string segmentContainer = null)
         {
             // Only use alternative encoders for video files.
             // When using concat with folder rips, if the mfx session fails to initialize, ffmpeg will be stuck retrying and will not exit gracefully
             // Since transcoding of folder rips is experimental anyway, it's not worth adding additional variables such as this.
-            // G5-C (Shield) : l'encodeur HW `*_mediacodec` ne délivre des paquets que
-            // via les jobs progressifs (route /stream.ts des apps TS-capables) — les
-            // jobs HLS stallent à frame=0 (matrice RUNFF, bug amont jellyfin-ffmpeg).
-            // Le web (hls fmp4) garde l'encodeur SW x264-NEON fluide.
-            if (state.VideoType == VideoType.VideoFile
-                && state.TranscodingType == TranscodingJobType.Progressive)
+            // G5-C/G5-D (Shield) : l'encodeur HW `*_mediacodec` ne délivre des paquets
+            // que via le muxer mpegts CONTINU (1 muxer unique : endurance 90 s + tests
+            // G5-D testsrc2 — les muxers hls et segment stallent à frame=0, copyts
+            // exclu). Les jobs HLS-TS des apps Android passent donc en byte-range
+            // (cmd mpegts continu servi via une playlist HLS à byte-ranges) : le
+            // container de segment, filé par le contrôleur, autorise la route.
+            // Le web (hls fmp4, encodeur SW) reste inchangé.
+            var isMpegtsRoute = state.TranscodingType == TranscodingJobType.Progressive
+                || (state.VideoType == VideoType.VideoFile
+                    && state.TranscodingType == TranscodingJobType.Hls
+                    && string.Equals(segmentContainer, "ts", StringComparison.OrdinalIgnoreCase));
+            if (state.VideoType == VideoType.VideoFile && isMpegtsRoute)
             {
                 var hwType = encodingOptions.HardwareAccelerationType;
 
@@ -485,8 +491,9 @@ namespace MediaBrowser.Controller.MediaEncoding
         /// </summary>
         /// <param name="state">Encoding state.</param>
         /// <param name="encodingOptions">Encoding options.</param>
+        /// <param name="segmentContainer">Container des segments HLS (filé par le contrôleur ; G5-D).</param>
         /// <returns>Encoder string.</returns>
-        public string GetVideoEncoder(EncodingJobInfo state, EncodingOptions encodingOptions)
+        public string GetVideoEncoder(EncodingJobInfo state, EncodingOptions encodingOptions, string segmentContainer = null)
         {
             var codec = state.OutputVideoCodec;
 
@@ -494,18 +501,18 @@ namespace MediaBrowser.Controller.MediaEncoding
             {
                 if (string.Equals(codec, "av1", StringComparison.OrdinalIgnoreCase))
                 {
-                    return GetAv1Encoder(state, encodingOptions);
+                    return GetAv1Encoder(state, encodingOptions, segmentContainer);
                 }
 
                 if (string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase))
                 {
-                    return GetH265Encoder(state, encodingOptions);
+                    return GetH265Encoder(state, encodingOptions, segmentContainer);
                 }
 
                 if (string.Equals(codec, "h264", StringComparison.OrdinalIgnoreCase))
                 {
-                    return GetH264Encoder(state, encodingOptions);
+                    return GetH264Encoder(state, encodingOptions, segmentContainer);
                 }
 
                 if (string.Equals(codec, "mjpeg", StringComparison.OrdinalIgnoreCase))
@@ -6335,6 +6342,7 @@ namespace MediaBrowser.Controller.MediaEncoding
                 HardwareAccelerationType.nvenc => GetNvidiaVidFilterChain(state, options, outputVideoCodec),
                 HardwareAccelerationType.videotoolbox => GetAppleVidFilterChain(state, options, outputVideoCodec),
                 HardwareAccelerationType.rkmpp => GetRkmppVidFilterChain(state, options, outputVideoCodec),
+                HardwareAccelerationType.mediacodec => GetMediacodecVidFilterChain(state, options, outputVideoCodec),
                 _ => GetSwVidFilterChain(state, options, outputVideoCodec),
             };
 
@@ -6605,15 +6613,24 @@ namespace MediaBrowser.Controller.MediaEncoding
         /// <param name="options">Encoding options.</param>
         /// <param name="videoStream">The video stream.</param>
         /// <param name="bitDepth">The color bit depth of the video stream.</param>
-        /// <returns>HW decoder args (route mediacodec, INACTIVE by default v1.1), empty string if not applicable.</returns>
-        /// <remarks>G4 v1.1 (Shield) : route techniquement implémentée mais <b>inactive par défaut</b> —
-        /// le décodage HW mediacodec combiné aux filtres SW de Jellyfin (scale/format sans hwdownload)
-        /// ne sort aucun segment HLS (constat run réel : init seul + roue infinie web). Le décode
-        /// CPU alimente l'encodeur HW (route dcpu-enc-mc validée 116 fps). Réactivation possible
-        /// via HardwareDecodingCodecs + hevc APRES traitement de la chaîne de filtres (G4-bis).
-        /// PixelFormat limité à 4:2:0 (yuv420p / yuv420p10le) — le décodeur Shield ne couvre que Main/Main10.</remarks>
+        /// <returns>HW decoder args (route passthrough décode HW → encode HW, achevée G2/hwdec-hwenc), empty string if not applicable.</returns>
+        /// <remarks>G5-C2 (Shield) : le décodage HW `hevc_mediacodec` n'alimente que la route
+        /// passthrough vivante côté sonde : décode HLS n'attendant aucun filtre CPU entre le
+        /// décode et l'encode h264_mediacodec (108 fps mesurés, `hwdec-hwenc` G2 ; le pipeline
+        /// Plex Android suit le même modèle, NDK files.readable strings). Toute autre route
+        /// (encodeur SW libx264/web fmp4, scale requis, sous-titres brûlés, tonemap) casserait
+        /// la chaîne sur `format=yuv420p` sans hwdownload : le décode reste côté CPU pour ces
+        /// cas (route dcpu-enc-mc validée à 116 fps). PixelFormat limité à 4:2:0 (yuv420p /
+        /// yuv420p10le) — le décodeur Shield ne couvre que Main / Main10.</remarks>
         private string GetMediacodecVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
         {
+            // Le passthrough n'est viable qu'avec l'encodeur HW h264_mediacodec (G5-C, jobs progressifs).
+            var vidEncoder = GetVideoEncoder(state, options);
+            if (!string.Equals(vidEncoder, "h264_mediacodec", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
             var isHevc = string.Equals(videoStream.Codec, "hevc", StringComparison.OrdinalIgnoreCase)
                          || string.Equals(videoStream.Codec, "h265", StringComparison.OrdinalIgnoreCase);
             var isCompatibleChroma = string.Equals(videoStream.PixelFormat, "yuv420p", StringComparison.OrdinalIgnoreCase)
@@ -6629,10 +6646,86 @@ namespace MediaBrowser.Controller.MediaEncoding
                 return string.Empty;
             }
 
+            // Passthrough exige un graph sans conversion CPU : pas de scale (output = input),
+            // pas de sous-titres brûlés, pas de tonemap SW ni de deutérance.
+            if (!IsMediacodecPassthroughCandidate(state, options))
+            {
+                return string.Empty;
+            }
+
             var isDecoderAvailable = _mediaEncoder.SupportsHwaccel("mediacodec")
                                      && _mediaEncoder.SupportsDecoder("hevc_mediacodec")
                                      && options.HardwareDecodingCodecs.Contains("hevc", StringComparison.OrdinalIgnoreCase);
-            return isDecoderAvailable ? " -hwaccel mediacodec -c:v hevc_mediacodec" : string.Empty;
+            return isDecoderAvailable ? " -c:v hevc_mediacodec" : string.Empty;
+        }
+
+        /// <summary>
+        /// Détermine si la route décode HW → encode HW mediacodec peut tourner sans filtre CPU.
+        /// </summary>
+        /// <param name="state">Job state.</param>
+        /// <param name="options">Options d'encodage utilisateur.</param>
+        /// <returns>true si aucune conversion CPU n'est requise (passthrough direct).</returns>
+        private bool IsMediacodecPassthroughCandidate(EncodingJobInfo state, EncodingOptions options)
+        {
+            if (IsSwTonemapAvailable(state, options) || IsDeinterlaceAvailable(state))
+            {
+                return false;
+            }
+
+            if (state.SubtitleStream is not null && ShouldEncodeSubtitle(state))
+            {
+                return false;
+            }
+
+            var videoStream = state.VideoStream;
+            if (videoStream is null)
+            {
+                return false;
+            }
+
+            var (outW, outH) = GetFixedOutputSize(
+                videoStream.Width,
+                videoStream.Height,
+                state.BaseRequest.Width,
+                state.BaseRequest.Height,
+                state.BaseRequest.MaxWidth,
+                state.BaseRequest.MaxHeight);
+
+            return outW == videoStream.Width && outH == videoStream.Height;
+        }
+
+        /// <summary>
+        /// Obtient la chaîne de filtres MediaCodec : passthrough décode HW → encode HW
+        /// (aucun filtre CPU), fallback chaîne SW standard dans les autres cas.
+        /// </summary>
+        /// <param name="state">État de l'encodage.</param>
+        /// <param name="options">Options d'encodage utilisateur.</param>
+        /// <param name="vidEncoder">L'encodeur vidéo retenu.</param>
+        /// <returns>Le tuple (filtres principaux, sous-titres, overlay).</returns>
+        /// <remarks>G5-C2 (Shield) : décode HW → encode HW = passthrough sans filtres (sonde G2
+        /// `hwdec-hwenc` 108 fps). Décode SW → encode HW (route dcpu-enc-mc 116 fps) ou les
+        /// routes du web (libx264) repassent par la chaîne SW standard.</remarks>
+        public (List<string> MainFilters, List<string> SubFilters, List<string> OverlayFilters) GetMediacodecVidFilterChain(
+            EncodingJobInfo state,
+            EncodingOptions options,
+            string vidEncoder)
+        {
+            if (options.HardwareAccelerationType != HardwareAccelerationType.mediacodec
+                || !string.Equals(vidEncoder, "h264_mediacodec", StringComparison.OrdinalIgnoreCase))
+            {
+                return GetSwVidFilterChain(state, options, vidEncoder);
+            }
+
+            var vidDecoder = GetHardwareVideoDecoder(state, options) ?? string.Empty;
+            var isSwDecoder = string.IsNullOrEmpty(vidDecoder);
+            if (isSwDecoder)
+            {
+                return GetSwVidFilterChain(state, options, vidEncoder);
+            }
+
+            // Passthrough : aucune conversion CPU entre le décode et l'encode.
+            var mainFilters = new List<string>();
+            return (mainFilters, new List<string>(), new List<string>());
         }
 
         /// <summary>
