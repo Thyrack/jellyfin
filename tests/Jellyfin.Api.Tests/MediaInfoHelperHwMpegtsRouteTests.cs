@@ -41,6 +41,32 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     }
 
     [Fact]
+    public static void VideoTranscode_Mediacodec_HlsTsProfil_PreserveHlsTs()
+    {
+        // G5-C4 : le client a un profil hls+ts (StreamBuilder l'a retenu) → route HLS
+        // segments TS préservée ; l'ExoPlayer refuse le TS progressif (source error).
+        var si = HlsVideoStream();
+        si.Container = "ts";
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
+
+        Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
+        Assert.Equal("ts", si.Container);
+    }
+
+    [Fact]
+    public static void VideoTranscode_Mediacodec_HlsFmp4Profil_TsCapable_BasculeProgressifTs()
+    {
+        // hls fmp4 (web-like ou fallback) + client ts-capable → pas de route TS HLS
+        // demandée : le fallback TS progressif première route (G5-B2) s'applique.
+        var si = HlsVideoStream();
+        si.Container = "mp4";
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
+
+        Assert.Equal(MediaStreamProtocol.http, si.SubProtocol);
+        Assert.Equal("ts", si.Container);
+    }
+
+    [Fact]
     public static void VideoTranscode_Mediacodec_TsIncapable_Inchangé()
     {
         var si = HlsVideoStream();

@@ -300,7 +300,13 @@ public class MediaInfoHelper
                 tsCapable,
                 _logger);
 
-            if (streamInfo.SubProtocol == MediaStreamProtocol.http
+            if (streamInfo.SubProtocol == MediaStreamProtocol.hls
+                && string.Equals(streamInfo.Container, "ts", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation(
+                    "G5-C4 : transcodage vidéo route HLS segments TS (client ts-capable, HW mediacodec actif).");
+            }
+            else if (streamInfo.SubProtocol == MediaStreamProtocol.http
                 && streamInfo.Container == "ts")
             {
                 _logger.LogInformation(
@@ -527,8 +533,12 @@ public class MediaInfoHelper
     }
 
     /// <summary>
-    /// G5-B2 (Shield) : bascule la route de transcodage vidéo vers le TS progressif
-    /// pour les clients TS-capables quand l'encodeur HW mediacodec est sélectionné.
+    /// G5-B2/G5-C4 (Shield) : bascule la route de transcodage vidéo pour les clients
+    /// TS-capables quand l'encodeur HW mediacodec est sélectionné. G5-C4 : si le
+    /// StreamBuilder a déjà retenu la route HLS segments TS (profil client `hls`+`ts`,
+    /// demandée nativement par les apps Android), on la préserve — l'ExoPlayer refuse
+    /// le TS progressif (constat source error) mais sait lire les segments TS ;
+    /// fallback TS progressif pour les clients n'offrant que `http`+`ts`.
     /// </summary>
     /// <param name="streamInfo">Le stream info construit par le StreamBuilder.</param>
     /// <param name="mediaType">Type de média de l'élément lu.</param>
@@ -560,9 +570,20 @@ public class MediaInfoHelper
             return;
         }
 
-        // TS progressif : /videos/{id}/stream.ts — muxer mpegts continu (l'unique
-        // sortie viable de l'encodeur HW h264_mediacodec, endurance 90 s on-device).
+        // G5-C4 : route HLS segments TS préservée quand le client l'a demandée
+        // elle-même (profil `hls`+`ts` — le Player Android sait la lire nativement).
+        if (streamInfo.SubProtocol == MediaStreamProtocol.hls
+            && string.Equals(streamInfo.Container, "ts", StringComparison.OrdinalIgnoreCase))
+        {
+            log?.LogDebug(
+                "G5-C4 debug : route HLS TS préservée (profil client hls+ts) ; subProtocol={Proto} ; container={Cont}",
+                streamInfo.SubProtocol,
+                streamInfo.Container);
+            return;
+        }
 
+        // Fallback TS progressif (G5-B2) : /videos/{id}/stream.ts — muxer mpegts continu
+        // (l'unique sortie viable de l'encodeur HW h264_mediacodec, endurance 90 s on-device).
         streamInfo.SubProtocol = MediaStreamProtocol.http;
         streamInfo.Container = "ts";
     }
