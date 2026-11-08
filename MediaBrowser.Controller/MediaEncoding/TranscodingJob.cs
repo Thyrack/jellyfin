@@ -89,6 +89,41 @@ public sealed class TranscodingJob : IDisposable
     public bool HasExited { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether this job sert un TS continu via une
+    /// playlist HLS byte-range (G5-D, route encodeur HW mediacodec).
+    /// </summary>
+    public bool HwByteRange { get; set; }
+
+    /// <summary>
+    /// Gets or sets l'offset global (octets) de l'ancre du flux courant — le contenu du
+    /// fichier TS en cours correspond au temps t à partir de cet offset (G5-E).
+    /// </summary>
+    public long HwByteRangeAnchorOffset { get; set; }
+
+    /// <summary>
+    /// Gets or sets le temps (s) du contenu au début du fichier TS courant (G5-E).
+    /// </summary>
+    public double HwByteRangeAnchorTimeSec { get; set; }
+
+    /// <summary>
+    /// Gets or sets la génération du fichier TS courant (0 = original, +1 à chaque
+    /// re-anchor de seek — G5-E).
+    /// </summary>
+    public int HwByteRangeGeneration { get; set; }
+
+    /// <summary>
+    /// Gets or sets la taille totale estimée du flux (octets) publiée dans le
+    /// Content-Range (G5-E).
+    /// </summary>
+    public long HwByteRangeTotalEstimateBytes { get; set; }
+
+    /// <summary>
+    /// Gets or sets le bitrate total cible (vidéo+audio) figé au premier fetch — la
+    /// référence commune du mapping temps↔octets entre playlist et serving (G5-E).
+    /// </summary>
+    public long HwByteRangeTotalBitrate { get; set; }
+
+    /// <summary>
     /// Gets or sets exit code.
     /// </summary>
     public int ExitCode { get; set; }

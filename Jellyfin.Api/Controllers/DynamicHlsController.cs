@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
@@ -28,7 +29,9 @@ using MediaBrowser.Model.Net;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
+using Microsoft.Net.Http.Headers;
 
 namespace Jellyfin.Api.Controllers;
 
@@ -1399,6 +1402,16 @@ public class DynamicHlsController : BaseJellyfinApiController
                 TranscodingJobType,
                 cancellationTokenSource.Token)
             .ConfigureAwait(false);
+        // G5-D : route byte-range HW — l'encodeur mediacodec ne délivre des paquets que
+        // via un muxer mpegts continu. Le job (cmd mpegts continu) est démarré ici et la
+        // playlist est générée dynamiquement à partir des octets écrits.
+        var byteRangeSegmentContainer = EncodingHelper.GetSegmentFileExtension(state.Request.SegmentContainer).TrimStart('.');
+        var byteRangeVideoCodec = _encodingHelper.GetVideoEncoder(state, _encodingOptions, byteRangeSegmentContainer);
+        if (IsHwByteRangeJob(state, byteRangeSegmentContainer, byteRangeVideoCodec))
+        {
+            return await GetHwByteRangePlaylistAsync(state, cancellationTokenSource).ConfigureAwait(false);
+        }
+
         var mediaSourceId = state.BaseRequest.MediaSourceId;
         double fps = state.TargetFramerate ?? 0.0f;
         int segmentLength = state.SegmentLength * 1000;
@@ -1575,21 +1588,661 @@ public class DynamicHlsController : BaseJellyfinApiController
         return segments;
     }
 
+    /// <summary>
+    /// Détermine si ce job HLS-TS doit être servi en byte-range HW (G5-D) : encodeur
+    /// mediacodec retenu et segments TS demandés — le TS continu est alors servi via
+    /// une playlist HLS à byte-ranges générée par le serveur.
+    /// </summary>
+    private bool IsHwByteRangeJob(StreamState state, string segmentContainer, string videoCodec)
+    {
+        var hwType = _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType;
+        return hwType == HardwareAccelerationType.mediacodec
+            && string.Equals(segmentContainer, "ts", StringComparison.OrdinalIgnoreCase)
+            && videoCodec.EndsWith("_mediacodec", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Démarre (si besoin) le job byte-range HW et sert la playlist générée
+    /// dynamiquement (octets du TS continu).
+    /// </summary>
+    private async Task<ActionResult> GetHwByteRangePlaylistAsync(StreamState state, CancellationTokenSource cancellationTokenSource)
+    {
+        var cancellationToken = cancellationTokenSource.Token;
+        var playlistPath = Path.ChangeExtension(state.OutputFilePath, ".m3u8");
+        TranscodingJob? job;
+
+        // G5-D : le muxer mpegts continu n'écrit pas de playlist — le StartFfMpeg doit
+        // attendre le fichier TS lui-même (sinon l'attente du .m3u8 expire et le job
+        // est tué, exit 254 até).
+        state.WaitForPath = Path.ChangeExtension(state.OutputFilePath, ".ts");
+
+        using (await _transcodeManager.LockAsync(playlistPath, cancellationToken).ConfigureAwait(false))
+        {
+            if (!System.IO.File.Exists(playlistPath))
+            {
+                // Écrire le playlist initial : son existence est le garde anti
+                // double-start (sinon chaque fetch de main.m3u8 relance un ffmpeg —
+                // saturation du serveur atée G5-D v3).
+                await System.IO.File.WriteAllTextAsync(playlistPath, "#EXTM3U\n#EXT-X-TARGETDURATION:7\n#EXT-X-MEDIA-SEQUENCE:0\n", cancellationToken);
+                try
+                {
+                    job = await _transcodeManager.StartFfMpeg(
+                            state,
+                            playlistPath,
+                            GetCommandLineArguments(playlistPath, state, true, 0),
+                            Request.HttpContext.User.GetUserId(),
+                            TranscodingJobType,
+                            cancellationTokenSource)
+                        .ConfigureAwait(false);
+                    job.HwByteRange = true;
+                }
+                catch
+                {
+                    state.Dispose();
+                    throw;
+                }
+            }
+            else
+            {
+                job = _transcodeManager.OnTranscodeBeginRequest(playlistPath, TranscodingJobType);
+            }
+        }
+
+        job ??= _transcodeManager.OnTranscodeBeginRequest(playlistPath, TranscodingJobType);
+
+        if (job is not null)
+        {
+            _transcodeManager.OnTranscodeEndRequest(job);
+        }
+
+        // G5-D v6 : attendre ~3 s de contenu avant la première publication — la
+        // réponse du playlist doit partir avant le timeout ExoPlayer (~10 s ; le
+        // constat G5-E : un seuil de 1000 s en ticks (erreur d'unité) mettait la
+        // réponse à T+15 s et l'app re-négociait en boucle). Rappel : 1 s = 10^7
+        // ticks.
+        var tsPath = Path.ChangeExtension(state.OutputFilePath, ".ts");
+        var vBitrate = state.OutputVideoBitrate ?? 3_000_000;
+        var aBitrate = state.OutputAudioBitrate ?? 192_000;
+        var firstChunkBytes = HwByteRangePlaylistBuilder.BytesAt(30_000_000, vBitrate, aBitrate);
+        var sw = Stopwatch.StartNew();
+        while (!cancellationToken.IsCancellationRequested && sw.ElapsedMilliseconds < 15000 && job?.HasExited is not true)
+        {
+            long len;
+            try
+            {
+                len = new FileInfo(tsPath).Length;
+            }
+            catch (IOException)
+            {
+                len = 0;
+            }
+
+            if (len >= firstChunkBytes)
+            {
+                break;
+            }
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
+
+        job ??= _transcodeManager.GetTranscodingJob(playlistPath, TranscodingJobType);
+        if (job is null)
+        {
+            return Content(string.Empty, MimeTypes.GetMimeType("playlist.m3u8"));
+        }
+
+        if (job.HwByteRangeTotalBitrate == 0)
+        {
+            job.HwByteRangeTotalBitrate = Math.Max(vBitrate + aBitrate, 1);
+        }
+
+        // G5-E : timeline complète théorique (barre correcte + seek partout).
+        _logger.LogDebug(
+            "G5-D playlist : job={Job} ; exit={Exit} ; gen={Gen} ; ancre={AnchorOff}@{AnchorSec} ; fichier={Len} octets",
+            job.Id,
+            job.HasExited,
+            job.HwByteRangeGeneration,
+            job.HwByteRangeAnchorOffset,
+            job.HwByteRangeAnchorTimeSec,
+            System.IO.File.Exists(tsPath) ? new FileInfo(tsPath).Length : 0);
+        Response.Headers[HeaderNames.CacheControl] = "no-cache, no-store, must-revalidate";
+        long availBytes;
+        try
+        {
+            availBytes = new FileInfo(tsPath).Length;
+        }
+        catch (IOException)
+        {
+            availBytes = 0;
+        }
+
+        var playlistText = HwByteRangePlaylistBuilder.Build(
+            job,
+            Path.GetFileNameWithoutExtension(state.OutputFilePath),
+            Request.QueryString.HasValue ? Request.QueryString.Value : string.Empty,
+            availBytes,
+            state.RunTimeTicks ?? 0,
+            vBitrate,
+            aBitrate);
+        return Content(playlistText, MimeTypes.GetMimeType("playlist.m3u8"));
+    }
+
+    /// <summary>
+    /// Sert un byte-range du TS continu d'un job byte-range HW (G5-E). L'offset
+    /// demandé est mappé vers le fichier TS courant via l'ancre du job ; un saut
+    /// hors fenêtre (seek lointain) re-ancre le job : re-encodage `-ss` vers un
+    /// nouveau fichier, la playlist théorique reste inchangée.
+    /// </summary>
+    /// <param name="itemId">L'identifiant de l'élément.</param>
+    /// <param name="fileName">Le nom du transcodage (hash sans extension).</param>
+    /// <param name="container">L'extension du conteneur (ts attendu).</param>
+    /// <param name="runtimeTicks">La position du segment en ticks.</param>
+    /// <param name="actualSegmentLengthTicks">La longueur du segment en ticks.</param>
+    /// <param name="static">Optionnel : streaming statique.</param>
+    /// <param name="params">Les paramètres de streaming.</param>
+    /// <param name="tag">Le tag.</param>
+    /// <param name="deviceProfileId">Optionnel : l'identifiant du profil device.</param>
+    /// <param name="playSessionId">L'identifiant de session de lecture.</param>
+    /// <param name="segmentContainer">Le conteneur de segment.</param>
+    /// <param name="segmentLength">La longueur de segment.</param>
+    /// <param name="minSegments">Le nombre minimum de segments.</param>
+    /// <param name="mediaSourceId">L'identifiant de la source.</param>
+    /// <param name="deviceId">L'identifiant du device.</param>
+    /// <param name="audioCodec">Le codec audio.</param>
+    /// <param name="enableAutoStreamCopy">La copie automatique des flux.</param>
+    /// <param name="allowVideoStreamCopy">Autoriser la copie vidéo.</param>
+    /// <param name="allowAudioStreamCopy">Autoriser la copie audio.</param>
+    /// <param name="audioSampleRate">Le taux d'échantillonnage audio.</param>
+    /// <param name="maxAudioBitDepth">La profondeur audio max.</param>
+    /// <param name="audioBitRate">Le bitrate audio.</param>
+    /// <param name="audioChannels">Le nombre de canaux audio.</param>
+    /// <param name="maxAudioChannels">Le nombre max de canaux.</param>
+    /// <param name="profile">Le profil encodeur.</param>
+    /// <param name="level">Le niveau.</param>
+    /// <param name="framerate">La fréquence d'images.</param>
+    /// <param name="maxFramerate">La fréquence max.</param>
+    /// <param name="copyTimestamps">Copier les timestamps.</param>
+    /// <param name="startTimeTicks">L'offset de départ en ticks.</param>
+    /// <param name="width">La largeur.</param>
+    /// <param name="height">La hauteur.</param>
+    /// <param name="maxWidth">La largeur max.</param>
+    /// <param name="maxHeight">La hauteur max.</param>
+    /// <param name="videoBitRate">Le bitrate vidéo.</param>
+    /// <param name="subtitleStreamIndex">L'index de sous-titre.</param>
+    /// <param name="subtitleMethod">La méthode de sous-titres.</param>
+    /// <param name="maxRefFrames">Le nombre max de frames de référence.</param>
+    /// <param name="maxVideoBitDepth">La profondeur vidéo max.</param>
+    /// <param name="requireAvc">Exiger Avc.</param>
+    /// <param name="deInterlace">Désentrelacer.</param>
+    /// <param name="requireNonAnamorphic">Exiger le non-anamorphique.</param>
+    /// <param name="transcodingMaxAudioChannels">Les canaux audio max.</param>
+    /// <param name="cpuCoreLimit">La limite de cœurs CPU.</param>
+    /// <param name="liveStreamId">L'identifiant de live.</param>
+    /// <param name="enableMpegtsM2TsMode">Le mode MpegtsM2Ts.</param>
+    /// <param name="videoCodec">Le codec vidéo.</param>
+    /// <param name="subtitleCodec">Le codec de sous-titres.</param>
+    /// <param name="transcodeReasons">Les raisons de transcodage.</param>
+    /// <param name="audioStreamIndex">L'index audio.</param>
+    /// <param name="videoStreamIndex">L'index vidéo.</param>
+    /// <param name="context">Le contexte d'encodage.</param>
+    /// <param name="streamOptions">Les options de streaming.</param>
+    /// <param name="enableAudioVbrEncoding">Activer le VBR audio.</param>
+    /// <param name="alwaysBurnInSubtitleWhenTranscoding">Toujours incruster les sous-titres.</param>
+    /// <response code="200">Segment retourné.</response>
+    /// <returns>A <see cref="FileResult"/> contenant le flux TS.</returns>
+    [HttpGet("Videos/{itemId}/hwbyterange/{fileName}.{container}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status206PartialContent)]
+    [ProducesVideoFile]
+    public async Task<ActionResult> GetHwByteRangeSegment(
+        [FromRoute, Required] Guid itemId,
+        [FromRoute, Required][RegularExpression(EncodingHelper.ContainerValidationRegexStr)] string fileName,
+        [FromRoute, Required][RegularExpression(EncodingHelper.ContainerValidationRegexStr)] string container,
+        [FromQuery, Required] long runtimeTicks,
+        [FromQuery, Required] long actualSegmentLengthTicks,
+        [FromQuery] bool? @static,
+        [FromQuery] string? @params,
+        [FromQuery] string? tag,
+        [FromQuery, ParameterObsolete] string? deviceProfileId,
+        [FromQuery] string? playSessionId,
+        [FromQuery][RegularExpression(EncodingHelper.ContainerValidationRegexStr)] string? segmentContainer,
+        [FromQuery] int? segmentLength,
+        [FromQuery] int? minSegments,
+        [FromQuery] string? mediaSourceId,
+        [FromQuery] string? deviceId,
+        [FromQuery][RegularExpression(EncodingHelper.ContainerValidationRegexStr)] string? audioCodec,
+        [FromQuery] bool? enableAutoStreamCopy,
+        [FromQuery] bool? allowVideoStreamCopy,
+        [FromQuery] bool? allowAudioStreamCopy,
+        [FromQuery] int? audioSampleRate,
+        [FromQuery] int? maxAudioBitDepth,
+        [FromQuery] int? audioBitRate,
+        [FromQuery] int? audioChannels,
+        [FromQuery] int? maxAudioChannels,
+        [FromQuery] string? profile,
+        [FromQuery][RegularExpression(EncodingHelper.LevelValidationRegexStr)] string? level,
+        [FromQuery] float? framerate,
+        [FromQuery] float? maxFramerate,
+        [FromQuery] bool? copyTimestamps,
+        [FromQuery] long? startTimeTicks,
+        [FromQuery] int? width,
+        [FromQuery] int? height,
+        [FromQuery] int? maxWidth,
+        [FromQuery] int? maxHeight,
+        [FromQuery] int? videoBitRate,
+        [FromQuery] int? subtitleStreamIndex,
+        [FromQuery] SubtitleDeliveryMethod? subtitleMethod,
+        [FromQuery] int? maxRefFrames,
+        [FromQuery] int? maxVideoBitDepth,
+        [FromQuery] bool? requireAvc,
+        [FromQuery] bool? deInterlace,
+        [FromQuery] bool? requireNonAnamorphic,
+        [FromQuery] int? transcodingMaxAudioChannels,
+        [FromQuery] int? cpuCoreLimit,
+        [FromQuery] string? liveStreamId,
+        [FromQuery] bool? enableMpegtsM2TsMode,
+        [FromQuery][RegularExpression(EncodingHelper.ContainerValidationRegexStr)] string? videoCodec,
+        [FromQuery][RegularExpression(EncodingHelper.ContainerValidationRegexStr)] string? subtitleCodec,
+        [FromQuery] string? transcodeReasons,
+        [FromQuery] int? audioStreamIndex,
+        [FromQuery] int? videoStreamIndex,
+        [FromQuery] EncodingContext? context,
+        [FromQuery] Dictionary<string, string> streamOptions,
+        [FromQuery] bool enableAudioVbrEncoding = true,
+        [FromQuery] bool alwaysBurnInSubtitleWhenTranscoding = false)
+    {
+        // N3 : la query transporte l'api_key — ne pas la loguer en clair.
+        _logger.LogDebug(
+            "G5-D hit : {Path} (container={Container} ; query={HasQuery})",
+            Request.Path,
+            container,
+            Request.QueryString.HasValue);
+        if (!string.Equals(container, "ts", StringComparison.OrdinalIgnoreCase))
+        {
+            return NotFound();
+        }
+
+        var transcodeFolder = _serverConfigurationManager.GetTranscodePath();
+        var playlistPath = Path.Combine(transcodeFolder, fileName + ".m3u8");
+        var job = _transcodeManager.GetTranscodingJob(playlistPath, TranscodingJobType);
+        if (job is null || !job.HwByteRange || job.HwByteRangeTotalBitrate == 0)
+        {
+            return NotFound();
+        }
+
+        // Le range demandé (header Range: bytes=A-B).
+        var rangeHeader = Request.Headers[HeaderNames.Range].ToString();
+        var (startOffset, endOffset) = ParseHwByteRange(rangeHeader, job.HwByteRangeTotalEstimateBytes);
+        if (startOffset is null)
+        {
+            return StatusCode(StatusCodes.Status416RangeNotSatisfiable);
+        }
+
+        var totalBitrate = job.HwByteRangeTotalBitrate;
+        _logger.LogDebug(
+            "G5-D range : fichier={File} ; demandé={Range} ; total={Total} octets",
+            $"hwbyterange/{fileName}-{job.HwByteRangeGeneration}.ts",
+            Request.Headers[HeaderNames.Range].ToString(),
+            job.HwByteRangeTotalEstimateBytes);
+        var targetSec = HwByteRangePlaylistBuilder.SecondsAt(startOffset.Value, videoBitRate ?? (int)(totalBitrate * 0.9), audioBitRate ?? (int)(totalBitrate * 0.1));
+
+        // La fenêtre du fichier TS courant (gen 0 = fichier sans suffixe, legs de la
+        // route d'origine ; les re-ancrages ajoutent le suffixe -{gen}).
+        var tsFile = TsFileNameForGeneration(transcodeFolder, fileName, job.HwByteRangeGeneration);
+        var fileLen = System.IO.File.Exists(tsFile) ? new FileInfo(tsFile).Length : 0;
+        var windowEnd = job.HwByteRangeAnchorTimeSec + (fileLen * 8.0 / totalBitrate);
+
+        // G5-E v15 : re-anchor RÉACTIVÉ — avec le mode VOD, le saut initial au
+        // live-edge n'existe plus : un range lointain n'arrive QUE sur un vrai seek
+        // utilisateur (un re-anchor unique, pas la chaîne ffplay). Le streaming est
+        // interrompu proprement (chunked) ; le nouveau flux démarre avec `-ss` à la
+        // position exacte à ~3-7 s.
+        // G5-E v15 : le re-anchor est sérialisé sous le lock du playlist — les
+        // players textes (ExoPlayer) préchargent le bloc ciblé ET le suivant en
+        // parallèle : sans lock, deux re-anchors concurrents tuent leurs jobs
+        // croisés et les ancres divergent (contenu du mauvais offset servi).
+        // G5-E v16/v17 : la garde idempotente REMPLACE le lock — le lock v15
+        // retenait les prefetchs 8-12 s (le silence socket >8 s coupe ExoPlayer :
+        // buffering constat). L'ancre du job est la garde : un fetch du même seek
+        // voit l'ancre couvrir sa cible et passe instantanément au serving.
+        // L'exclusion des doubles re-anchors est CONDITIONNELLE (v17) : l'ancre est
+        // posée AVANT StartFfMpeg (couvre la fenêtre WaitForPath), restauration
+        // exacte dans le catch ; les captures pré-kill passent la garde, les
+        // fetches frais pendant WaitForPath reçoivent un 404 transient.
+        var reAnchorActive = true;
+        var doiReAnchor = reAnchorActive
+            && targetSec > windowEnd + 0.5
+            && !job.HasExited
+            && job.HwByteRangeAnchorTimeSec < targetSec - 2.0;
+
+        if (doiReAnchor)
+        {
+            var streamingRequest = new VideoRequestDto
+            {
+                Id = itemId,
+                CurrentRuntimeTicks = (long)(targetSec * 10_000_000),
+                ActualSegmentLengthTicks = actualSegmentLengthTicks,
+                Container = container,
+                Static = @static ?? false,
+                Params = @params,
+                Tag = tag,
+                PlaySessionId = playSessionId,
+                SegmentContainer = segmentContainer,
+                SegmentLength = segmentLength,
+                MinSegments = minSegments,
+                MediaSourceId = mediaSourceId,
+                DeviceId = deviceId,
+                AudioCodec = audioCodec,
+                EnableAutoStreamCopy = enableAutoStreamCopy ?? true,
+                AllowAudioStreamCopy = allowAudioStreamCopy ?? true,
+                AllowVideoStreamCopy = allowVideoStreamCopy ?? true,
+                AudioSampleRate = audioSampleRate,
+                MaxAudioChannels = maxAudioChannels,
+                AudioBitRate = audioBitRate,
+                MaxAudioBitDepth = maxAudioBitDepth,
+                AudioChannels = audioChannels,
+                Profile = profile,
+                Level = level,
+                Framerate = framerate,
+                MaxFramerate = maxFramerate,
+                CopyTimestamps = copyTimestamps ?? false,
+                StartTimeTicks = (long)(targetSec * 10_000_000),
+                Width = width,
+                Height = height,
+                MaxWidth = maxWidth,
+                MaxHeight = maxHeight,
+                VideoBitRate = videoBitRate,
+                SubtitleStreamIndex = subtitleStreamIndex,
+                SubtitleMethod = subtitleMethod ?? SubtitleDeliveryMethod.External,
+                MaxRefFrames = maxRefFrames,
+                MaxVideoBitDepth = maxVideoBitDepth,
+                RequireAvc = requireAvc ?? false,
+                DeInterlace = deInterlace ?? false,
+                RequireNonAnamorphic = requireNonAnamorphic ?? false,
+                TranscodingMaxAudioChannels = transcodingMaxAudioChannels,
+                CpuCoreLimit = cpuCoreLimit,
+                LiveStreamId = liveStreamId,
+                EnableMpegtsM2TsMode = enableMpegtsM2TsMode ?? false,
+                VideoCodec = videoCodec,
+                SubtitleCodec = subtitleCodec,
+                TranscodeReasons = transcodeReasons,
+                AudioStreamIndex = audioStreamIndex,
+                VideoStreamIndex = videoStreamIndex,
+                Context = context ?? EncodingContext.Streaming,
+                StreamOptions = streamOptions,
+                EnableAudioVbrEncoding = enableAudioVbrEncoding,
+                AlwaysBurnInSubtitleWhenTranscoding = alwaysBurnInSubtitleWhenTranscoding
+            };
+
+            var cancellationTokenSource = new CancellationTokenSource();
+            await _transcodeManager.KillTranscodingJobs(streamingRequest.DeviceId ?? string.Empty, streamingRequest.PlaySessionId, path => false)
+                .ConfigureAwait(false);
+
+            var state = await StreamingHelpers.GetStreamingState(
+                    streamingRequest,
+                    HttpContext,
+                    _mediaSourceManager,
+                    _userManager,
+                    _libraryManager,
+                    _serverConfigurationManager,
+                    _mediaEncoder,
+                    _encodingHelper,
+                    _transcodeManager,
+                    TranscodingJobType,
+                    cancellationTokenSource.Token)
+                .ConfigureAwait(false);
+
+            // G5-E v17/v18 : l'ancre et la génération sont réservées AVANT
+            // StartFfMpeg — le job est enregistré dès OnTranscodeBeginning (3-7 s de
+            // WaitForPath) : pendant cette fenêtre, un fetch concurrent du même seek
+            // lit ce job et la garde idempotente doit déjà voir l'ancre couvrante,
+            // sinon double re-anchor (les jobs se tuent mutuellement, les fichiers
+            // {hash}-{gen}.ts s'écrasent deux fois). Les ancres précédentes sont
+            // capturées pour une restauration EXACTE au catch.
+            var previousGeneration = job.HwByteRangeGeneration;
+            var previousAnchorOffset = job.HwByteRangeAnchorOffset;
+            var previousAnchorTimeSec = job.HwByteRangeAnchorTimeSec;
+            job.HwByteRangeGeneration = previousGeneration + 1;
+            job.HwByteRangeAnchorOffset = startOffset.Value;
+            job.HwByteRangeAnchorTimeSec = targetSec;
+            job.HwByteRangeTotalBitrate = totalBitrate;
+            var newTsFile = Path.Combine(transcodeFolder, $"{fileName}-{job.HwByteRangeGeneration}.ts");
+            // Le cmd byte-range dérive le fichier TS de l'OutputFilePath : pointer le
+            // state sur le fichier suffixé pour que l'ancien flux ne soit pas écrasé.
+            state.OutputFilePath = newTsFile;
+            state.WaitForPath = newTsFile;
+            try
+            {
+                var newJob = await _transcodeManager.StartFfMpeg(
+                        state,
+                        playlistPath,
+                        // G5-E v10 : le branch byte-range dérive son fichier TS du
+                        // paramètre outputPath — passer le fichier suffixé (sinon le
+                        // cmd écrase {hash}.ts, le gen-0, et WaitForPath ne se
+                        // déclenche jamais → hang).
+                        GetCommandLineArguments(Path.ChangeExtension(newTsFile, ".m3u8"), state, false, 0),
+                        Request.HttpContext.User.GetUserId(),
+                        TranscodingJobType,
+                        cancellationTokenSource)
+                    .ConfigureAwait(false);
+                newJob.HwByteRange = true;
+                newJob.HwByteRangeGeneration = job.HwByteRangeGeneration;
+                newJob.HwByteRangeAnchorOffset = job.HwByteRangeAnchorOffset;
+                newJob.HwByteRangeAnchorTimeSec = job.HwByteRangeAnchorTimeSec;
+                newJob.HwByteRangeTotalEstimateBytes = job.HwByteRangeTotalEstimateBytes;
+                newJob.HwByteRangeTotalBitrate = totalBitrate;
+                _logger.LogInformation(
+                    "G5-E : re-anchor seek {0}s (offset {1}) → fichier {2}",
+                    targetSec,
+                    startOffset,
+                    newTsFile);
+            }
+            catch
+            {
+                // Restauration EXACTE de l'ancre précédente : une ancre fabriquée
+                // (targetSec-10) fausserait le mapping offset→temps des fetches
+                // ultérieurs (contenu décalé silencieux si l'objet job reste
+                // référençable — le kill ne matche pas toujours). La garde
+                // anti-fantôme reste effective par construction :
+                // previousAnchorTimeSec < targetSec - 2.0 était la condition d'entrée.
+                job.HwByteRangeGeneration = previousGeneration;
+                job.HwByteRangeAnchorOffset = previousAnchorOffset;
+                job.HwByteRangeAnchorTimeSec = previousAnchorTimeSec;
+                state.Dispose();
+                throw;
+            }
+        }
+        else if (reAnchorActive
+            && targetSec > windowEnd + 0.5
+            && job.HwByteRangeAnchorTimeSec >= targetSec - 2.0
+            && !job.HasExited)
+        {
+            _logger.LogDebug(
+                "G5-E : re-anchor déjà au fait (ancre={0}s ≥ target={1}s) — serving direct",
+                job.HwByteRangeAnchorTimeSec,
+                targetSec);
+        }
+
+        // Le serving : le mapping offset global → local (ancre) puis le 206 custom.
+        job = _transcodeManager.GetTranscodingJob(playlistPath, TranscodingJobType);
+        if (job is null)
+        {
+            return NotFound();
+        }
+
+        tsFile = TsFileNameForGeneration(transcodeFolder, fileName, job.HwByteRangeGeneration);
+        fileLen = System.IO.File.Exists(tsFile) ? new FileInfo(tsFile).Length : 0;
+        var localOffset = startOffset.Value - job.HwByteRangeAnchorOffset;
+        if (localOffset < 0)
+        {
+            return NotFound();
+        }
+
+        // G5-E v4 : streaming incrémental du range demandé. Chaque octet encodé est
+        // poussé immédiatement (jamais >100 ms de silence socket : le read timeout
+        // ExoPlayer ~8 s tuait la lecture — « source error », constat post-reboot).
+        // Le Content-Length annonce le range complet théorique ; à la fin du job le
+        // flux se termine sur ce qui existe (la fin réelle du média).
+        var requestedCount = endOffset is null
+            ? job.HwByteRangeTotalEstimateBytes - startOffset.Value
+            : endOffset.Value - startOffset.Value + 1;
+        requestedCount = Math.Min(requestedCount, Math.Max(job.HwByteRangeTotalEstimateBytes - startOffset.Value, 1));
+        if (requestedCount <= 0)
+        {
+            return NotFound();
+        }
+
+        // G5-E v15 : le BeginRequest peut retourner un AUTRE job (le principal
+        // remplacé par un re-anchor concurrent) — capturer ce job pour apparier
+        // son EndRequest, sinon le compteur d'ActiveRequestCount du job réel
+        // reste bloqué et le kill timer n'arme jamais (fuite job+fichier).
+        var servedJob = _transcodeManager.OnTranscodeBeginRequest(playlistPath, TranscodingJobType) ?? job;
+
+        Response.StatusCode = StatusCodes.Status206PartialContent;
+        Response.Headers[HeaderNames.CacheControl] = "no-cache, no-store";
+        Response.Headers[HeaderNames.ContentRange] =
+            $"bytes {startOffset}-{startOffset + requestedCount - 1}/{servedJob.HwByteRangeTotalEstimateBytes}";
+        Response.ContentType = MimeTypes.GetMimeType("file.ts");
+        // G5-E v11 : PAS de Content-Length — le streaming peut être interrompu par un
+        // changement de bitrate (kill du job) ou abandon client : un length annoncé
+        // non couvert déclenche « Response Content-Length mismatch » dans Kestrel
+        // (constat : 813420/1125000 → exception fatale, roue infinie). Le mode
+        // chunked rend cette race impossible ; le Content-Range conserve la plage.
+        var fs = new FileStream(tsFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, IODefaults.FileStreamBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        try
+        {
+            fs.Seek(localOffset, SeekOrigin.Begin);
+            var buffer = new byte[65536];
+            var buffered = 0L;
+            while (!Request.HttpContext.RequestAborted.IsCancellationRequested
+                   && buffered < requestedCount)
+            {
+                var available = fileLen - localOffset - buffered;
+                if (available > 0)
+                {
+                    var chunk = (int)Math.Min(Math.Min(available, buffer.LongLength), requestedCount - buffered);
+                    var read = await fs.ReadAsync(buffer.AsMemory(0, chunk), Request.HttpContext.RequestAborted).ConfigureAwait(false);
+                    if (read > 0)
+                    {
+                        await Response.Body.WriteAsync(buffer.AsMemory(0, read), Request.HttpContext.RequestAborted).ConfigureAwait(false);
+                        await Response.Body.FlushAsync(Request.HttpContext.RequestAborted).ConfigureAwait(false);
+                        buffered += read;
+                        continue;
+                    }
+                }
+
+                if (servedJob.HasExited)
+                {
+                    break;
+                }
+
+                await Task.Delay(100).ConfigureAwait(false);
+                fileLen = System.IO.File.Exists(tsFile) ? new FileInfo(tsFile).Length : 0;
+            }
+        }
+        finally
+        {
+            await fs.DisposeAsync().ConfigureAwait(false);
+            _transcodeManager.OnTranscodeEndRequest(servedJob);
+        }
+
+        return new EmptyResult();
+    }
+
+    /// <summary>
+    /// Résout le chemin du fichier TS d'une generation : gen 0 = {hash}.ts (le nom
+    /// d'origine), gen &gt;= 1 = {hash}-{gen}.ts (les re-ancrages du seek).
+    /// </summary>
+    private static string TsFileNameForGeneration(string transcodeFolder, string fileName, int generation)
+        => generation <= 0
+            ? Path.Combine(transcodeFolder, fileName + ".ts")
+            : Path.Combine(transcodeFolder, $"{fileName}-{generation}.ts");
+
+    /// <summary>
+    /// Parse le header Range (bytes=A-B) d'un request byte-range G5-E.
+    /// </summary>
+    /// <param name="rangeHeader">La valeur du header.</param>
+    /// <param name="totalEstimate">La taille totale estimée du flux.</param>
+    /// <returns>L'offset de départ et l'offset de fin (null si ouvert), ou (null, null).</returns>
+    private static (long? Start, long? End) ParseHwByteRange(string rangeHeader, long totalEstimate)
+    {
+        if (string.IsNullOrEmpty(rangeHeader) || !rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+        {
+            return (0, null);
+        }
+
+        var spec = rangeHeader["bytes=".Length..].Trim();
+        var dash = spec.IndexOf('-'.ToString(), StringComparison.Ordinal);
+        if (dash < 0)
+        {
+            return (null, null);
+        }
+
+        var startPart = spec[..dash].Trim();
+        if (startPart.Length == 0)
+        {
+            return (null, null);
+        }
+
+        if (!long.TryParse(startPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var start))
+        {
+            return (null, null);
+        }
+
+        if (start >= totalEstimate && totalEstimate > 0)
+        {
+            return (null, null);
+        }
+
+        long? end = null;
+        var endPart = spec[(dash + 1)..].Trim();
+        if (endPart.Length > 0 && long.TryParse(endPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedEnd))
+        {
+            end = Math.Min(parsedEnd, totalEstimate - 1);
+        }
+
+        return (start, end);
+    }
+
     private string GetCommandLineArguments(string outputPath, StreamState state, bool isEventPlaylist, int startNumber)
     {
-        var videoCodec = _encodingHelper.GetVideoEncoder(state, _encodingOptions);
+        var outputExtension = EncodingHelper.GetSegmentFileExtension(state.Request.SegmentContainer);
+        var segmentContainer = outputExtension.TrimStart('.');
+
+        // G5-D : le container de segment est filé jusqu'au choix de l'encodeur (les
+        // jobs HLS-TS passent en byte-range HW : encodeur mediacodec + muxer continu).
+        var videoCodec = _encodingHelper.GetVideoEncoder(state, _encodingOptions, segmentContainer);
         var threads = EncodingHelper.GetNumberOfThreads(state, _encodingOptions, videoCodec);
+
+        // Route byte-range : l'encodeur HW mediacodec ne délivre des paquets que via un
+        // muxer mpegts CONTINU (les muxers hls/segment stallent, at G5-D). Le cmd
+        // écrit directement le fichier TS continu ; la playlist HLS est générée par le
+        // serveur (GetVariantPlaylistInternal, byte-ranges append-only).
+        var isHwByteRange = IsHwByteRangeJob(state, segmentContainer, videoCodec);
+        if (isHwByteRange)
+        {
+            var tsPath = Path.ChangeExtension(outputPath, ".ts");
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} {1} {2} {3} {4} {5} -map_metadata -1 -map_chapters -1 -threads {6} -y \"{7}\"",
+                _encodingHelper.GetInputModifier(state, _encodingOptions, segmentContainer),
+                _encodingHelper.GetInputArgument(state, _encodingOptions, segmentContainer),
+                state.IsOutputVideo ? _encodingHelper.GetMapArgs(state) : string.Empty,
+                GetVideoArguments(state, startNumber, isEventPlaylist, segmentContainer),
+                GetAudioArguments(state),
+                _encodingHelper.GetOutputFFlags(state),
+                threads,
+                tsPath.EscapeProcessArgument()).Trim();
+        }
 
         var mapArgs = state.IsOutputVideo ? _encodingHelper.GetMapArgs(state) : string.Empty;
 
         var directory = Path.GetDirectoryName(outputPath) ?? throw new ArgumentException($"Provided path ({outputPath}) is not valid.", nameof(outputPath));
         var outputFileNameWithoutExtension = Path.GetFileNameWithoutExtension(outputPath);
         var outputPrefix = Path.Combine(directory, outputFileNameWithoutExtension);
-        var outputExtension = EncodingHelper.GetSegmentFileExtension(state.Request.SegmentContainer);
         var outputTsArg = outputPrefix + "%d" + outputExtension;
 
         var segmentFormat = string.Empty;
-        var segmentContainer = outputExtension.TrimStart('.');
         var inputModifier = _encodingHelper.GetInputModifier(state, _encodingOptions, segmentContainer);
         var hlsArguments = $"-hls_playlist_type {(isEventPlaylist ? "event" : "vod")} -hls_list_size 0";
 
@@ -1807,7 +2460,9 @@ public class DynamicHlsController : BaseJellyfinApiController
             return string.Empty;
         }
 
-        var codec = _encodingHelper.GetVideoEncoder(state, _encodingOptions);
+        // G5-D : le container de segment est filé (les jobs HLS-TS byte-range HW
+        // reçoivent l'encodeur mediacodec, le fmp4 reste SW).
+        var codec = _encodingHelper.GetVideoEncoder(state, _encodingOptions, segmentContainer);
 
         var args = "-codec:v:0 " + codec;
 

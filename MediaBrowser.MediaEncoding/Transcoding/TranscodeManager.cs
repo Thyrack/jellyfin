@@ -225,11 +225,23 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
         {
             _activeTranscodingJobs.Remove(job);
 
-            if (job.CancellationTokenSource?.IsCancellationRequested == false)
+            // Course avec job.Dispose() (la CTS est disposée PUIS nullée) : la capture
+            // locale évite la fenêtre entre le check et le Cancel (NRE non catchée
+            // dans le lock = crash process, constat transcode d'une session live).
+            var cancellationTokenSource = job.CancellationTokenSource;
+            if (cancellationTokenSource?.IsCancellationRequested == false)
             {
+                try
+                {
 #pragma warning disable CA1849 // Can't await in lock block
-                job.CancellationTokenSource.Cancel();
+                    cancellationTokenSource.Cancel();
 #pragma warning restore CA1849
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Course entre le kill timer et la disposition du job : la CTS
+                    // est déjà libérée, rien à annuler (le crash tuerait le process).
+                }
             }
         }
 

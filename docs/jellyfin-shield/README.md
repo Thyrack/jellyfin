@@ -192,3 +192,42 @@ premier démarrage (le process serveur lui-même s'appelle `dotnet`, non capté 
   le kill libère la file — le TranscodeManager relance à la prochaine demande client.
 - Usage : une lecture HW à la fois — si une session précédente traîne, le redémarrage
   de l'apk la purge (force-stop + relaunch).
+
+### G5-D/G5-E (livré) — route byte-range : décodage HW + transcodage HW via playlist serveur
+- Principe (constat G5-A confirmé) : l'encodeur MediaCodec ne livre des paquets que
+  via un **muxer mpegts continu** (toute frontière de segment stalle : hls fmp4/TS
+  segmenté, segment, matroska). La route : job `-f mpegts` continu vers
+  `{hash}{-gen}.ts`, **playlist HLS générée par le serveur** (builder
+  `HwByteRangePlaylistBuilder`), segments servis par la route dédiée
+  `Videos/{itemId}/hwbyterange/{fileName}.ts` avec range processing
+  (206, streaming incrémental chunked).
+- Playlist `#EXT-X-PLAYLIST-TYPE:VOD` + **timeline théorique complète** : la barre
+  du player couvre la durée totale, la navigation est possible partout.
+- **Seek lointain = re-anchor** : un offset hors fenêtre d'encodage déclenche un
+  seul re-lancement ffmpeg avec `-ss` à la position exacte vers un fichier
+  `{hash}-{gen}.ts` (génération++ ; gen 0 = fichier sans suffixe). Le mapping
+  offset global ↔ fichier local passe par l'ancre du job
+  (`HwByteRangeAnchorOffset/AnchorTimeSec`), bitrate figé au premier fetch
+  (`HwByteRangeTotalBitrate`).
+- **Double-anchorage dit « idempotent » (v16)** : la garde
+  `job.HwByteRangeAnchorTimeSec ≥ targetSec - 2 s` oriente les fetches
+  concurrents du même seek directement au serving — le lock initial (v15) retenait
+  les prefetchs 8-12 s et coupait ExoPlayer (le read timeout 8 s) : buffering constaté, retiré. Le lock serveur reste interdit sur cette route ; l'appariement
+  `OnTranscodeBeginRequest/EndRequest` capte le job servit (servedJob), pas la
+  variable locale (le pool peut l'avoir remplacé par un re-anchor concurrent).
+- Constats fixés au passage (tous reproductibles) : Content-Length fixe sur un
+  flux interruptible → mismatch Kestrel fatal (réglé : chunked, sans
+  Content-Length) ; CTS disposée pendant le kill timer (réglé : catch
+  ObjectDisposedException dans `TranscodeManager`) ; `WAITFORSIMPLESPATH` du
+  StartFfMpeg doit pointer sur le TS réel (sinon exit 254) ; les URLs de segments
+  VOD exigent `runtimeTicks/actualSegmentLengthTicks` (sinon 400 au client) ;
+  `PLAYLIST-TYPE:EVENT` fait sauter les players au live-edge (bloc 6462 s demandé
+  à t=5 s pendant ffplay) — VOD est le mode tenu.
+- Route d'éligibilité (MediaInfoHelper G5-C4) : clients ts-capables — profil
+  `hls`+`ts` préservé, fallback `http`+`ts` progressif, le web fmp4 reste en SW.
+- Perfs mesurées : décode HW hevc_mediacodec (Main10) + encode HW
+  h264_mediacodec = **4,85-4,91×** ; route décode CPU + encode HW (dcpu-enc-mc)
+  = 1,15-1,6× ; seek lointain validé **206 réponses en 7-15 s** sur offset +20 min.
+- Tests : 234 Controller + 185 Api verts (7 tests builder : durée totale,
+  timeline stable, total estimate, couverture sans trou, ENDLIST, mapping
+  inverse, query vide ; 2 tests route G5-C4).
