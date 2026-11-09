@@ -20,6 +20,7 @@ using Jellyfin.Extensions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Extensions;
 using MediaBrowser.Controller.IO;
+using MediaBrowser.Controller.Streaming;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
@@ -6624,8 +6625,13 @@ namespace MediaBrowser.Controller.MediaEncoding
         /// yuv420p10le) — le décodeur Shield ne couvre que Main / Main10.</remarks>
         private string GetMediacodecVidDecoder(EncodingJobInfo state, EncodingOptions options, MediaStream videoStream, int bitDepth)
         {
-            // Le passthrough n'est viable qu'avec l'encodeur HW h264_mediacodec (G5-C, jobs progressifs).
-            var vidEncoder = GetVideoEncoder(state, options);
+            // G5-D (N2 corrigé) : le passthrough s'arme aussi pour les jobs HLS-TS
+            // byte-range : le segmentContainer est filé au choix de l'encodeur (le
+            // gate GetH26xOrAv1Encoder l'accepte pour `ts`), sinon le décode HW
+            // serait refusé par le vidEncoder résolu « libx264 » du HLS.
+            var isHlsTsJob = state is StreamState streamState
+                && string.Equals(streamState.Request.SegmentContainer, "ts", StringComparison.OrdinalIgnoreCase);
+            var vidEncoder = GetVideoEncoder(state, options, isHlsTsJob ? "ts" : null);
             if (!string.Equals(vidEncoder, "h264_mediacodec", StringComparison.OrdinalIgnoreCase))
             {
                 return string.Empty;

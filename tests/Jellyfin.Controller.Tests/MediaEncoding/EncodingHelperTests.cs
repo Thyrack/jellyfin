@@ -714,4 +714,44 @@ public class EncodingHelperTests
 
         Assert.Equal("libx264", args);
     }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecHevc_HlsTs_ByteRange_PassthroughArme()
+    {
+        // G5-D (N2 corrigé) : les jobs HLS-TS byte-range arme le passthrough décode
+        // HW (le TS continu est le seul canal de l'encodeur mediacodec).
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc");
+        state.TranscodingType = TranscodingJobType.Hls;
+        state.VideoStream.PixelFormat = "yuv420p10le";
+        state.VideoStream.BitDepth = 10;
+        state.BaseRequest = new StreamingRequestDto { SegmentContainer = "ts" };
+        var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.mediacodec, HardwareDecodingCodecs = ["h264", "vc1", "hevc"] };
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, options);
+
+        Assert.Contains("-c:v hevc_mediacodec", args, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_MediacodecHevc_HlsFmp4_PassthroughRefuse()
+    {
+        // La segmentation fmp4 casse l'encodeur mediacodec (matrice G5-A) : les jobs
+        // fmp4 du web gardent le décode CPU.
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(m => m.SupportsEncoder("h264_mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsHwaccel("mediacodec")).Returns(true);
+        encoder.Setup(m => m.SupportsDecoder("hevc_mediacodec")).Returns(true);
+        var state = BuildVideoState("hevc");
+        state.TranscodingType = TranscodingJobType.Hls;
+        state.VideoStream.PixelFormat = "yuv420p10le";
+        state.VideoStream.BitDepth = 10;
+        state.BaseRequest = new StreamingRequestDto { SegmentContainer = "mp4" };
+        var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.mediacodec, HardwareDecodingCodecs = ["h264", "vc1", "hevc"] };
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, options);
+
+        Assert.Equal(string.Empty, args);
+    }
 }

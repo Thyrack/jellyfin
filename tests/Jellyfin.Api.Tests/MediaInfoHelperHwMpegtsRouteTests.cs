@@ -34,7 +34,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void VideoTranscode_Mediacodec_TsCapable_ForceProgressifTs()
     {
         var si = HlsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.http, si.SubProtocol);
         Assert.Equal("ts", si.Container);
@@ -47,7 +47,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
         // segments TS préservée ; l'ExoPlayer refuse le TS progressif (source error).
         var si = HlsVideoStream();
         si.Container = "ts";
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Equal("ts", si.Container);
@@ -60,7 +60,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
         // demandée : le fallback TS progressif première route (G5-B2) s'applique.
         var si = HlsVideoStream();
         si.Container = "mp4";
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.http, si.SubProtocol);
         Assert.Equal("ts", si.Container);
@@ -70,7 +70,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void VideoTranscode_Mediacodec_TsIncapable_Inchangé()
     {
         var si = HlsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, false, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, false, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -80,7 +80,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     public static void VideoTranscode_HwTypeNonMediacodec_Inchangé()
     {
         var si = HlsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.none, true, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.none, true, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -91,7 +91,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
     {
         var si = HlsVideoStream();
         si.PlayMethod = PlayMethod.DirectPlay;
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.DirectPlay, HardwareAccelerationType.mediacodec, true, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.DirectPlay, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);
@@ -108,7 +108,7 @@ public static class MediaInfoHelperHwMpegtsRouteTests
             Container = null,
             PlayMethod = PlayMethod.Transcode
         };
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Audio, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Audio, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Null(si.Container);

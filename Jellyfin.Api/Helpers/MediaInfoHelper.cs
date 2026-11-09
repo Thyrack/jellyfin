@@ -183,7 +183,7 @@ public class MediaInfoHelper
     public void SetDeviceSpecificData(
         BaseItem item,
         MediaSourceInfo mediaSource,
-        DeviceProfile profile,
+        DeviceProfile? profile,
         ClaimsPrincipal claimsPrincipal,
         int? maxBitrate,
         long startTimeTicks,
@@ -202,6 +202,17 @@ public class MediaInfoHelper
         IPAddress ipAddress)
     {
         var streamBuilder = new StreamBuilder(_mediaEncoder, _logger);
+        var clientName = claimsPrincipal.GetClient();
+        // G5-D (Apple/le filtrage hevc) : le DeviceProfile peut venir du cache
+        // GetCapabilities (la référence partagée). E1 revue s+1 : le clone est
+        // CONDITIONNÉ aux clients Apple (les non-Apple gardent l'original intact
+        // : le StreamBuilder lit DirectPlayProfiles/CodecProfiles/ContainerProfiles/
+        // SubtitleProfiles mutés par le filtrage serait une régression direct-play)
+        // et le clone est FIDÈLE — les autres listes par référence (le filtrage ne
+        // mute que TranscodingProfiles du clone).
+        var profileNonNull = profile is null || IsAppleClient(clientName) is false
+            ? profile ?? new DeviceProfile()
+            : CloneProfileForHevcFiltering(profile);
 
         var options = new MediaOptions
         {
@@ -209,7 +220,7 @@ public class MediaInfoHelper
             Context = EncodingContext.Streaming,
             DeviceId = claimsPrincipal.GetDeviceId(),
             ItemId = item.Id,
-            Profile = profile,
+            Profile = profileNonNull,
             MaxAudioChannels = maxAudioChannels,
             AllowAudioStreamCopy = allowAudioStreamCopy,
             AllowVideoStreamCopy = allowVideoStreamCopy,
@@ -266,6 +277,19 @@ public class MediaInfoHelper
         }
 
         // Beginning of Playback Determination
+
+        // G5-D (Apple) : AVFoundation ne lit jamais le HEVC en MPEG-TS (le HLS TS
+        // Apple est H.264 uniquement, le HEVC n'existe qu'en fMP4 côté Apple) — le
+        // remux hevc-ts produit des segments que le player parse puis échoue
+        // (rame/abandon, constat Top Gun + Le.Village). Retirer le HEVC des profils
+        // de remux/transcodage des clients Apple pour que le StreamBuilder choisisse
+        // le transcodage H.264 (la route byte-range HW mediacodec en aval).
+        if (IsAppleClient(clientName))
+        {
+            // Le clone fidèle a déjà été fait ci-dessus + le filtrage hevc appliqué.
+            RemoveHevcVideoProfiles(profileNonNull, _logger);
+        }
+
         var streamInfo = item.MediaType == MediaType.Audio
             ? streamBuilder.GetOptimalAudioStream(options)
             : streamBuilder.GetOptimalVideoStream(options);
@@ -278,8 +302,8 @@ public class MediaInfoHelper
             // ne délivre que via TS continu (endurance 90 s validée on-device),
             // les encapsulateurs HLS à frontière de segment stallent. Le web
             // (profil hls/fmp4, incapable de jouer du TS) reste sur la route SW.
-            var tsCapable = IsTsCapableClient(profile.TranscodingProfiles, claimsPrincipal.GetClient());
-            var profilsClient = profile.TranscodingProfiles
+            var tsCapable = IsTsCapableClient(profileNonNull.TranscodingProfiles, clientName);
+            var profilsClient = profileNonNull.TranscodingProfiles
                 .Where(i => i.Type == DlnaProfileType.Video)
                 .Select(i => $"{i.Protocol}:{i.Container}")
                 .ToList();
@@ -287,8 +311,8 @@ public class MediaInfoHelper
                 "G5-B2 debug : client={Client} ; device={Device} ; profilName={PName} ; profilId={PId} ; profils=[{Profils}] ; tsCapable={TsCapable} ; subProtocol={Proto}",
                 claimsPrincipal.GetClient() ?? "(aucun)",
                 claimsPrincipal.GetDevice() ?? "(aucun)",
-                profile.Name ?? "(aucun)",
-                profile.Id?.ToString() ?? "(aucun)",
+                profile?.Name ?? "(aucun)",
+                profile?.Id?.ToString() ?? "(aucun)",
                 string.Join(", ", profilsClient),
                 tsCapable,
                 streamInfo.SubProtocol);
@@ -298,6 +322,7 @@ public class MediaInfoHelper
                 streamInfo.PlayMethod,
                 _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType,
                 tsCapable,
+                clientName,
                 _logger);
 
             if (streamInfo.SubProtocol == MediaStreamProtocol.hls
@@ -327,7 +352,7 @@ public class MediaInfoHelper
             mediaSource.SupportsTranscoding =
                 streamInfo.PlayMethod == PlayMethod.DirectStream
                 || mediaSource.TranscodingContainer is not null
-                || profile.TranscodingProfiles.Any(i => i.Type == streamInfo.MediaType && i.Context == options.Context);
+                || profileNonNull.TranscodingProfiles.Any(i => i.Type == streamInfo.MediaType && i.Context == options.Context);
 
             if (item is Audio)
             {
@@ -539,12 +564,16 @@ public class MediaInfoHelper
     /// demandée nativement par les apps Android), on la préserve — l'ExoPlayer refuse
     /// le TS progressif (constat source error) mais sait lire les segments TS ;
     /// fallback TS progressif pour les clients n'offrant que `http`+`ts`.
+    /// G5-D (iPhone) : les clients Apple (AVFoundation) ne consomment pas le TS
+    /// progressif — AVPlayer exige du HLS : ils sont forcés sur la route HLS
+    /// byte-range (le TS continu servi par la playlist HLS du serveur).
     /// </summary>
     /// <param name="streamInfo">Le stream info construit par le StreamBuilder.</param>
     /// <param name="mediaType">Type de média de l'élément lu.</param>
     /// <param name="playMethod">Méthode de lecture retenue par le StreamBuilder.</param>
     /// <param name="hardwareAccelerationType">Type d'accélération matérielle de la config.</param>
-    /// <param name="tsCapableClient">Vrai si le profil client a un profil de transcodage `ts`/`http`.</param>
+    /// <param name="tsCapableClient">Vrai si le profil client a un profil de transcodage `ts`/`http`/`hls`.</param>
+    /// <param name="clientName">Le nom du client (claims) pour le jeton Apple (AVFoundation).</param>
     /// <param name="log">Le logger de l'instance (diagnostic de route).</param>
     public static void ApplyHwMpegtsRoute(
         StreamInfo streamInfo,
@@ -552,6 +581,7 @@ public class MediaInfoHelper
         PlayMethod playMethod,
         HardwareAccelerationType hardwareAccelerationType,
         bool tsCapableClient,
+        string? clientName,
         ILogger? log)
     {
         ArgumentNullException.ThrowIfNull(streamInfo);
@@ -567,6 +597,21 @@ public class MediaInfoHelper
                 playMethod,
                 hardwareAccelerationType,
                 tsCapableClient);
+            return;
+        }
+
+        // G5-D (iOS) : AVFoundation refuse le TS progressif ET le TS segmenté avec
+        // l'encodeur HW (le muxer -f hls stalle, matrice G5-A) — AVPlayer ne
+        // consomme correctement que le TS continu via une playlist VOD serveur.
+        // La branche est AVANT G5-C4 : les clients Apple demandent déjà `hls`+`ts`
+        // dans leurs profils, la préservation les ferait sortir trop tôt.
+        if (IsAppleClient(clientName))
+        {
+            log?.LogDebug(
+                "G5-D debug : client Apple ({Client}) — route HLS byte-range forcée (AVFoundation)",
+                clientName);
+            streamInfo.SubProtocol = MediaStreamProtocol.hls;
+            streamInfo.Container = "ts";
             return;
         }
 
@@ -586,6 +631,87 @@ public class MediaInfoHelper
         // (l'unique sortie viable de l'encodeur HW h264_mediacodec, endurance 90 s on-device).
         streamInfo.SubProtocol = MediaStreamProtocol.http;
         streamInfo.Container = "ts";
+    }
+
+    /// <summary>
+    /// Identifie les clients Apple (AVFoundation/AVPlayer) : leurs players ne
+    /// consomment pas le TS progressif — uniquement du HLS.
+    /// </summary>
+    /// <param name="clientName">Le nom du client issu des claims.</param>
+    /// <returns>Vrai pour les clients Jellyfin iOS / Apple TV / Mac.</returns>
+    public static bool IsAppleClient(string? clientName)
+    {
+        if (string.IsNullOrEmpty(clientName))
+        {
+            return false;
+        }
+
+        return clientName.StartsWith("Jellyfin iOS", StringComparison.OrdinalIgnoreCase)
+            || clientName.StartsWith("Jellyfin Apple", StringComparison.OrdinalIgnoreCase)
+            || clientName.StartsWith("Jellyfin Mac", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Clone fidèle d'un DeviceProfile pour le filtrage hevc Apple : les listes
+    /// MUTÉES par le filtrage (TranscodingProfiles) sont copiées en profondeur
+    /// (via le constructeur de copie natif), les listes LUES par le StreamBuilder
+    /// mais jamais mutées (DirectPlay/Codec/Container/Subtitle/Response) restent
+    /// par référence — l'original du cache ne voit aucune amputation.
+    /// </summary>
+    /// <param name="profile">Le DeviceProfile d'entrée (du DTO ou du cache).</param>
+    /// <returns>Le clone avec les TranscodingProfiles copiés en profondeur.</returns>
+    private static DeviceProfile CloneProfileForHevcFiltering(DeviceProfile profile)
+    {
+        var clone = new DeviceProfile
+        {
+            Name = profile.Name,
+            Id = profile.Id,
+            MaxStreamingBitrate = profile.MaxStreamingBitrate,
+            MaxStaticBitrate = profile.MaxStaticBitrate,
+            MusicStreamingTranscodingBitrate = profile.MusicStreamingTranscodingBitrate,
+            DirectPlayProfiles = profile.DirectPlayProfiles,
+            CodecProfiles = profile.CodecProfiles,
+            ContainerProfiles = profile.ContainerProfiles,
+            SubtitleProfiles = profile.SubtitleProfiles,
+            TranscodingProfiles = profile.TranscodingProfiles
+                .Select(p => new TranscodingProfile(p))
+                .ToArray()
+        };
+
+        return clone;
+    }
+
+    /// <summary>
+    /// Retire le HEVC (orthographes `hevc`/`h265`) des profils de transcodage/remux
+    /// vidéo d'un client Apple — sur un CLONE du profil (le DeviceProfile d'origine
+    /// peut être la référence partagée du cache GetCapabilities : l'amputation sur
+    /// l'original persisterait inter-requêtes). Les profils restants (H.264)
+    /// préservent la navigation.
+    /// </summary>
+    /// <param name="profile">Le device profile du client.</param>
+    /// <param name="log">Le logger (la trace de filtrage : les profils retirés).</param>
+    public static void RemoveHevcVideoProfiles(DeviceProfile profile, ILogger? log = null)
+    {
+        if (profile?.TranscodingProfiles is not { Length: > 0 } allProfiles)
+        {
+            return;
+        }
+
+        var kept = allProfiles
+            .Where(p => p.Type != DlnaProfileType.Video
+                || (!(p.VideoCodec ?? string.Empty).Contains("hevc", StringComparison.OrdinalIgnoreCase)
+                    && !(p.VideoCodec ?? string.Empty).Contains("h265", StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        if (kept.Length == allProfiles.Length)
+        {
+            return;
+        }
+
+        log?.LogInformation(
+            "G5-D (Apple) : {Removed} profils hevc Codec retirés du DeviceProfile (le HEVC-TS est illisible par AVFoundation)",
+            allProfiles.Length - kept.Length);
+        profile.TranscodingProfiles = kept;
     }
 
     /// <summary>

@@ -31,29 +31,35 @@ public static class HwByteRangePlaylistTests
         => (long)(ticks / 10_000_000.0 * (TestVideoBitrate + TestAudioBitrate) / 8.0);
 
     [Fact]
-    public static void Publie_LaDureeTotale()
+    public static void Publie_LaFenetreEncodee_Event()
     {
-        // G5-E v14 : la timeline théorique complète — la barre du player couvre le film.
-        var text = HwByteRangePlaylistBuilder.Build(MakeJob(), "hash", "?api=k", 0L, TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
+        // G5-D (Apple v19) : le player Apple (AVFoundation) rejette toute playlist
+        // VOD dont les blocs finaux n'existent pas — la playlist ne publie que la
+        // fenêtre encodée (les blocs completement écrits), EVENT + pas de ENDLIST.
+        var text = HwByteRangePlaylistBuilder.Build(MakeJob(), "hash", "?api=k", 14_715_000L, TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
 
         var extinfCount = text.Split('\n').Count(line => line.StartsWith("#EXTINF", StringComparison.Ordinal));
-        Assert.Equal(2000, extinfCount); // 12 000 s / 6 s
+        Assert.Equal(15, extinfCount); // 90 s encodées / 6 s
         Assert.Contains("#EXT-X-VERSION:4", text, StringComparison.Ordinal);
-        Assert.Contains("#EXT-X-PLAYLIST-TYPE:VOD", text, StringComparison.Ordinal);
+        Assert.Contains("#EXT-X-PLAYLIST-TYPE:EVENT", text, StringComparison.Ordinal);
         Assert.Contains("#EXT-X-TARGETDURATION:7", text, StringComparison.Ordinal);
         Assert.Contains("hwbyterange/hash.ts?api=k", text, StringComparison.Ordinal);
         Assert.DoesNotContain("#EXT-X-ENDLIST", text, StringComparison.Ordinal);
     }
 
     [Fact]
-    public static void Timeline_Stable_AuxReFetch()
+    public static void Fenetre_Croissante_AjouteDesEntrees()
     {
-        // Les re-fetch du playlist produisent STRICTEMENT la même liste (le VOD ne
-        // mute pas, même si l'encodage a progressé — le contenu suit via le serving).
-        var t1 = HwByteRangePlaylistBuilder.Build(MakeJob(), "hash", null, 0L, TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
+        // Les re-fetch (AVPlayer re-fetch le playlist EVENT pour lire la croissance).
+        var t1 = HwByteRangePlaylistBuilder.Build(MakeJob(), "hash", null, 14_715_000L, TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
         var t2 = HwByteRangePlaylistBuilder.Build(MakeJob(), "hash", null, 29_430_000L, TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
 
-        Assert.Equal(t1, t2, StringComparer.Ordinal);
+        var c1 = t1.Split('\n').Count(line => line.StartsWith("#EXTINF", StringComparison.Ordinal));
+        var c2 = t2.Split('\n').Count(line => line.StartsWith("#EXTINF", StringComparison.Ordinal));
+        Assert.Equal(15, c1);
+        Assert.Equal(30, c2);
+        // Les entrées précédentes restent stables (un append-only, jamais retirées).
+        Assert.Contains(t1.Split('\n').First(line => line.StartsWith("#EXT-X-BYTERANGE", StringComparison.Ordinal)), t2, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -100,7 +106,7 @@ public static class HwByteRangePlaylistTests
     [Fact]
     public static void JobTermine_EmetEndlist()
     {
-        var text = HwByteRangePlaylistBuilder.Build(MakeJob(true), "hash", null, TotalBytesForTicks(TestDurationTicks), TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
+        var text = HwByteRangePlaylistBuilder.Build(MakeJob(true), "hash", null, TotalBytesForTicks(TestDurationTicks) / 2, TestDurationTicks, TestVideoBitrate, TestAudioBitrate, TestBlockSeconds);
 
         Assert.Contains("#EXT-X-ENDLIST", text, StringComparison.Ordinal);
     }

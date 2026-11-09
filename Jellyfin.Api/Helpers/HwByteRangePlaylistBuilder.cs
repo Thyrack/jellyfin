@@ -6,15 +6,15 @@ using MediaBrowser.Controller.MediaEncoding;
 namespace Jellyfin.Api.Helpers;
 
 /// <summary>
-/// Générateur de playlist HLS byte-range pour les jobs byte-range HW (G5-E) :
+/// Générateur de playlist HLS byte-range pour les jobs byte-range HW (G5-E v19) :
 /// le TS continu produit par le muxer mpegts (l'unique sortie délivrant les
-/// paquets de l'encodeur mediacodec) est publié via une timeline théorique
-/// complète — les entrées de {blockSeconds} s couvrent toute la durée du média
-/// dès le premier fetch (la barre de progression du player est correcte et le
-/// seek est possible partout). Les offsets sont estimés au bitrate cible ; le
-/// serving mappe l'offset global estimé vers le fichier TS courant (ancre
-/// {HwByteRangeAnchorOffset/HwByteRangeAnchorTimeSec}) et re-ancre le job
-/// (re-encodage -ss) pour les positions hors fenêtre.
+/// paquets de l'encodeur mediacodec) est publié EVENT — la fenêtre = les blocs
+/// de {blockSeconds} s complètement écrits (la playlist croît à chaque re-fetch,
+/// ENDLIST à la fin du job). AVFoundation rejette toute playlist dont les blocs
+/// finaux n'existent pas (la VOD théorique v14 a été rejetée au parse). La barre
+/// des players Apple vient du metadata RunTimeTicks de la session ; les offsets
+/// réagissent au serving via l'ancre du job et le re-anchor gère le seek
+/// lointain pour les clients non-Apple (le TS progressatif ExoPlayer).
 /// </summary>
 public static class HwByteRangePlaylistBuilder
 {
@@ -24,7 +24,7 @@ public static class HwByteRangePlaylistBuilder
     /// <param name="job">Le job de transcodage byte-range (ancre, fin, timeline).</param>
     /// <param name="fileName">Le nom du transcodage (sans extension) pour l'URL du segment.</param>
     /// <param name="queryString">La chaîne de requête à reproduire sur l'URL du segment (auth).</param>
-    /// <param name="availableBytes">Réservé (n'influence plus la playlist depuis la v14 : la timeline complète est publiée).</param>
+    /// <param name="availableBytes">Les octets réellement écrits du TS continu — la fenêtre publiée (AVFoundation exige que chaque bloc annoncé existe).</param>
     /// <param name="totalDurationTicks">La durée totale du média en ticks (1 tick = 100 ns).</param>
     /// <param name="videoBitrate">Le bitrate vidéo cible (estimation des offsets).</param>
     /// <param name="audioBitrate">Le bitrate audio cible (estimation des offsets).</param>
@@ -48,11 +48,13 @@ public static class HwByteRangePlaylistBuilder
         var totalDurationSec = totalDurationTicks / 10_000_000.0;
 
         var builder = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:4\n");
-        // G5-E v14 : PLAYLIST-TYPE VOD + timeline théorique complète — la barre du
-        // player affiche la durée totale du film et le seek est navigable partout.
-        // (Le mode EVENT avait fait sauter les players au live-edge : bloc 6462 s
-        // demandé pendant que le film en était à 5 s.)
-        builder.Append("#EXT-X-PLAYLIST-TYPE:VOD\n");
+        // G5-D (Apple v19) : la playlist EVENT ne publie que la fenêtre encodée —
+        // AVFoundation exige que chaque bloc annoncé existe : la timeline théorique
+        // VOD (v14) a été rejetée au parse par AVPlayer (0 fetch de range, constat
+        // session 16:57). La fenêtre croît à chaque re-fetch (EVENT append-only,
+        // ENDLIST à la fin du job). La barre des players Apple vient du metadata
+        // RunTimeTicks de la session, pas du manifeste.
+        builder.Append("#EXT-X-PLAYLIST-TYPE:EVENT\n");
         builder.Append("#EXT-X-TARGETDURATION:").Append((int)Math.Ceiling(blockSeconds) + 1).Append('\n');
         builder.Append("#EXT-X-MEDIA-SEQUENCE:0\n");
 
@@ -62,13 +64,15 @@ public static class HwByteRangePlaylistBuilder
         var hasQuery = !string.IsNullOrEmpty(queryString);
         var separator = hasQuery ? "&" : "?";
         var segmentUrl = $"hwbyterange/{fileName}.ts{(hasQuery ? queryString : string.Empty)}";
-        var blocks = (int)Math.Ceiling(totalDurationSec / blockSeconds);
-        for (var i = 0; i < blocks; i++)
+        var availableSec = availableBytes * 8.0 / Math.Max(videoBitrate + audioBitrate, 1);
+        var publishedSec = Math.Min(availableSec, totalDurationSec);
+        var blocksPublished = (int)Math.Floor(publishedSec / blockSeconds);
+        for (var i = 0; i < blocksPublished; i++)
         {
             var startSec = i * blockSeconds;
             var endSec = Math.Min((i + 1) * blockSeconds, totalDurationSec);
             var startOffset = BytesAt((long)(startSec * 10_000_000), videoBitrate, audioBitrate);
-            var endOffset = i == blocks - 1 ? job.HwByteRangeTotalEstimateBytes : BytesAt((long)(endSec * 10_000_000), videoBitrate, audioBitrate);
+            var endOffset = Math.Min(BytesAt((long)(endSec * 10_000_000), videoBitrate, audioBitrate), availableBytes);
             var len = endOffset - startOffset;
             if (len <= 0)
             {

@@ -1655,15 +1655,15 @@ public class DynamicHlsController : BaseJellyfinApiController
             _transcodeManager.OnTranscodeEndRequest(job);
         }
 
-        // G5-D v6 : attendre ~3 s de contenu avant la première publication — la
-        // réponse du playlist doit partir avant le timeout ExoPlayer (~10 s ; le
-        // constat G5-E : un seuil de 1000 s en ticks (erreur d'unité) mettait la
-        // réponse à T+15 s et l'app re-négociait en boucle). Rappel : 1 s = 10^7
-        // ticks.
+        // G5-D v19 : attendre ~7 s de contenu avant la première publication — au
+        // moins UN BLOC COMPLET (le builder publie par blocs de 6 s : une fenêtre
+        // de 3-4,8 s produisait une playlist VIDE (0 entrée EXTINF, constat Apple
+        // session 21:44 : fichier=786432 octets → floor(4,8/6)=0 entrées), que
+        // AVPlayer rejette immédiatement). Rappel : 1 s = 10^7 ticks.
         var tsPath = Path.ChangeExtension(state.OutputFilePath, ".ts");
         var vBitrate = state.OutputVideoBitrate ?? 3_000_000;
         var aBitrate = state.OutputAudioBitrate ?? 192_000;
-        var firstChunkBytes = HwByteRangePlaylistBuilder.BytesAt(30_000_000, vBitrate, aBitrate);
+        var firstChunkBytes = HwByteRangePlaylistBuilder.BytesAt(70_000_000, vBitrate, aBitrate);
         var sw = Stopwatch.StartNew();
         while (!cancellationToken.IsCancellationRequested && sw.ElapsedMilliseconds < 15000 && job?.HasExited is not true)
         {
@@ -1696,7 +1696,9 @@ public class DynamicHlsController : BaseJellyfinApiController
             job.HwByteRangeTotalBitrate = Math.Max(vBitrate + aBitrate, 1);
         }
 
-        // G5-E : timeline complète théorique (barre correcte + seek partout).
+        // G5-E v19 : la playlist byte-range EVENT fenêtre encodée (les blocs
+        // complets uniquement — AVPlayer rejette un VOD dont les blocs finaux
+        // n'existent pas).
         _logger.LogDebug(
             "G5-D playlist : job={Job} ; exit={Exit} ; gen={Gen} ; ancre={AnchorOff}@{AnchorSec} ; fichier={Len} octets",
             job.Id,
