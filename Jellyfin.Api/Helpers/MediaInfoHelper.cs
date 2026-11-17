@@ -206,10 +206,11 @@ public class MediaInfoHelper
         // G5-D (Apple/le filtrage hevc) : le DeviceProfile peut venir du cache
         // GetCapabilities (la référence partagée). E1 revue s+1 : le clone est
         // CONDITIONNÉ aux clients Apple (les non-Apple gardent l'original intact
-        // : le StreamBuilder lit DirectPlayProfiles/CodecProfiles/ContainerProfiles/
-        // SubtitleProfiles mutés par le filtrage serait une régression direct-play)
-        // et le clone est FIDÈLE — les autres listes par référence (le filtrage ne
-        // mute que TranscodingProfiles du clone).
+        // : muter DirectPlayProfiles/CodecProfiles/ContainerProfiles/
+        // SubtitleProfiles de l'original serait une régression direct-play) et
+        // le clone est FIDÈLE — TranscodingProfiles filtrés en profondeur +
+        // CodecProfiles réassignés (G5-F, source HDR) : mutations toujours par
+        // réassignation sur le clone, l'original du cache n'est jamais touché.
         var profileNonNull = profile is null || IsAppleClient(clientName) is false
             ? profile ?? new DeviceProfile()
             : CloneProfileForHevcFiltering(profile);
@@ -284,10 +285,35 @@ public class MediaInfoHelper
         // (rame/abandon, constat Top Gun + Le.Village). Retirer le HEVC des profils
         // de remux/transcodage des clients Apple pour que le StreamBuilder choisisse
         // le transcodage H.264 (la route byte-range HW mediacodec en aval).
+        // G5-F : la décision est verrouillée en une variable pour les DEUX usages
+        // (strip/keep du profil et forçage de route) : une divergence forcerait le
+        // TS sur un streamInfo fMP4 HEVC (régression HEVC-TS silencieuse).
+        var sourceIsHdr = IsAppleClient(clientName) && !IsSourceSdrVideo(mediaSource);
         if (IsAppleClient(clientName))
         {
-            // Le clone fidèle a déjà été fait ci-dessus + le filtrage hevc appliqué.
-            RemoveHevcVideoProfiles(profileNonNull, _logger);
+            // Le strip hevc ne vaut que pour la route TS H264 (le HEVC-TS est
+            // illisible par AVFoundation) — i.e. les sources SDR. Pour une source
+            // HDR (PQ/HLG/DOVI), le H264 PQ produit par le passthrough HW est rejeté
+            // par AVPlayer : le HLS Apple n'admet l'HDR qu'en HEVC (le profil du
+            // client exige d'ailleurs SDR pour h264) — constat 17/11 : fetch annulé
+            // 0,13 s après le range (OperationCanceledException côté serving, le
+            // player rend son verdict au parsing du header). Pour ces sources le
+            // profil hevc-fmp4 du client est CONSERVÉ et ses CodecProfiles hevc
+            // (condition hvc1|dvh1, jamais vraie depuis un MKV sans CodecTag) sont
+            // retirés : le StreamBuilder choisit alors le remux HEVC→fMP4 (copie,
+            // charge ~nulle, 4K HDR natif) sur la route HLS standard — validé
+            // on-device : `-codec:v:0 copy -tag:v:0 hvc1 -f hls -hls_segment_type
+            // fmp4 -hls_playlist_type vod` (segments hvc1 3840x1608 PQ + eac3).
+            if (!sourceIsHdr)
+            {
+                RemoveHevcVideoProfiles(profileNonNull, _logger);
+            }
+            else
+            {
+                RemoveHevcCodecProfiles(profileNonNull, _logger);
+                _logger.LogInformation(
+                    "G5-F (Apple) : source HDR — profil hevc-fmp4 conservé (remux HEVC→fMP4, route HLS standard)");
+            }
         }
 
         var streamInfo = item.MediaType == MediaType.Audio
@@ -323,6 +349,7 @@ public class MediaInfoHelper
                 _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType,
                 tsCapable,
                 clientName,
+                sourceIsHdr,
                 _logger);
 
             if (streamInfo.SubProtocol == MediaStreamProtocol.hls
@@ -574,6 +601,9 @@ public class MediaInfoHelper
     /// <param name="hardwareAccelerationType">Type d'accélération matérielle de la config.</param>
     /// <param name="tsCapableClient">Vrai si le profil client a un profil de transcodage `ts`/`http`/`hls`.</param>
     /// <param name="clientName">Le nom du client (claims) pour le jeton Apple (AVFoundation).</param>
+    /// <param name="sourceIsHdr">Vrai si la source vidéo est HDR (PQ/HLG/DOVI) — les
+    /// clients Apple consomment alors le remux HEVC→fMP4 (la fMP4 du StreamBuilder
+    /// est conservée) au lieu du forçage TS-H264.</param>
     /// <param name="log">Le logger de l'instance (diagnostic de route).</param>
     public static void ApplyHwMpegtsRoute(
         StreamInfo streamInfo,
@@ -582,6 +612,7 @@ public class MediaInfoHelper
         HardwareAccelerationType hardwareAccelerationType,
         bool tsCapableClient,
         string? clientName,
+        bool sourceIsHdr,
         ILogger? log)
     {
         ArgumentNullException.ThrowIfNull(streamInfo);
@@ -605,13 +636,25 @@ public class MediaInfoHelper
         // consomme correctement que le TS continu via une playlist VOD serveur.
         // La branche est AVANT G5-C4 : les clients Apple demandent déjà `hls`+`ts`
         // dans leurs profils, la préservation les ferait sortir trop tôt.
-        if (IsAppleClient(clientName))
+        // G5-F : une source HDR consomme le remux HEVC→fMP4 (le profil hevc-fmp4 du
+        // client est conservé côté StreamBuilder) — le forçage TS ne vaut que pour
+        // l'encodage H264 (route byte-range HW). AVFoundation lit le HEVC fMP4
+        // nativement (y compris DV/HDR10, tag hvc1 posé par le muxer).
+        if (IsAppleClient(clientName) && !sourceIsHdr)
         {
             log?.LogDebug(
                 "G5-D debug : client Apple ({Client}) — route HLS byte-range forcée (AVFoundation)",
                 clientName);
             streamInfo.SubProtocol = MediaStreamProtocol.hls;
             streamInfo.Container = "ts";
+            return;
+        }
+
+        if (IsAppleClient(clientName) && sourceIsHdr)
+        {
+            log?.LogDebug(
+                "G5-F debug : client Apple ({Client}) — source HDR : fMP4 conservé (remux HEVC, route HLS standard)",
+                clientName);
             return;
         }
 
@@ -652,10 +695,12 @@ public class MediaInfoHelper
     }
 
     /// <summary>
-    /// Clone fidèle d'un DeviceProfile pour le filtrage hevc Apple : les listes
-    /// MUTÉES par le filtrage (TranscodingProfiles) sont copiées en profondeur
-    /// (via le constructeur de copie natif), les listes LUES par le StreamBuilder
-    /// mais jamais mutées (DirectPlay/Codec/Container/Subtitle/Response) restent
+    /// Clone d'un DeviceProfile pour le filtrage hevc Apple : les listes MUTÉES par
+    /// le filtrage (TranscodingProfiles copiées en profondeur via le constructeur
+    /// de copie natif ; CodecProfiles laissés par référence — la mutation G5-F est
+    /// une RÉASSIGNATION de la propriété sur le clone, l'array partagé avec
+    /// l'original du cache n'est jamais modifié sur place), les listes LUES par le
+    /// StreamBuilder mais jamais mutées (DirectPlay/Container/Subtitle) restent
     /// par référence — l'original du cache ne voit aucune amputation.
     /// </summary>
     /// <param name="profile">Le DeviceProfile d'entrée (du DTO ou du cache).</param>
@@ -679,6 +724,54 @@ public class MediaInfoHelper
         };
 
         return clone;
+    }
+
+    /// <summary>
+    /// Indique si la source vidéo est SDR — i.e. encodable en H264 sans conversion
+    /// de couleur. Les sources HDR (PQ/HLG/DOVI) exigent soit un tonemap (absent du
+    /// ffmpeg embarqué : pas de filtre `tonemapx`), soit un remux HEVC→fMP4 pour les
+    /// clients Apple (le HLS Apple n'admet l'HDR qu'en HEVC). Sans flux vidéo ou
+    /// sans métadonnées couleur (VideoRange calculé SDR), le traitement est
+    /// conservateur (SDR → strip hevc-TS).
+    /// </summary>
+    /// <param name="mediaSource">La source média évaluée.</param>
+    /// <returns>Vrai si la vidéo principale est SDR (ou indéterminée : conservateur).</returns>
+    public static bool IsSourceSdrVideo(MediaSourceInfo? mediaSource)
+    {
+        var video = mediaSource?.MediaStreams?.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+        return video is null || video.VideoRange == VideoRange.SDR;
+    }
+
+    /// <summary>
+    /// Retire les CodecProfiles vidéo HEVC d'un client Apple (condition
+    /// `VideoCodecTag: hvc1|dvh1` requise — jamais vraie pour un remux depuis un
+    /// MKV sans CodecTag : sans retrait, le profil hevc-fmp4 conservé pour la
+    /// source HDR n'est jamais éligible côté StreamBuilder).
+    /// </summary>
+    /// <param name="profile">Le device profile du client.</param>
+    /// <param name="log">Le logger (la trace de filtrage : les CodecProfiles retirés).</param>
+    public static void RemoveHevcCodecProfiles(DeviceProfile profile, ILogger? log = null)
+    {
+        if (profile?.CodecProfiles is not { Length: > 0 } allProfiles)
+        {
+            return;
+        }
+
+        var kept = allProfiles
+            .Where(p => p.Type != CodecType.Video
+                || (!(p.Codec ?? string.Empty).Contains("hevc", StringComparison.OrdinalIgnoreCase)
+                    && !(p.Codec ?? string.Empty).Contains("h265", StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        if (kept.Length == allProfiles.Length)
+        {
+            return;
+        }
+
+        log?.LogInformation(
+            "G5-F (Apple) : {Removed} CodecProfiles hevc retirés (condition VideoCodecTag hvc1|dvh1 inapplicable à un remux MKV)",
+            allProfiles.Length - kept.Length);
+        profile.CodecProfiles = kept;
     }
 
     /// <summary>

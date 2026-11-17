@@ -3,6 +3,7 @@ using System.Linq;
 using Jellyfin.Api.Helpers;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Model.Dlna;
+using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Session;
 using Xunit;
@@ -41,17 +42,76 @@ public static class ApplyHwMpegtsRouteAppleClientTests
         // l'iPhone reçoit la playlist HLS byte-range du serveur. La branch Apple
         // est AVANT la préservation G5-C4 (l'app Apple demande déjà hls+ts).
         var si = AppleHlsTsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin iOS", null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin iOS", false, null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Equal("ts", si.Container);
     }
 
     [Fact]
+    public static void VideoTranscode_Mediacodec_AppIos_SourceHdr_ConservesFmp4()
+    {
+        // G5-F : une source HDR (PQ/HLG/DOVI) encodée H264 PQ est rejetée par
+        // AVPlayer (le HLS Apple n'admet l'HDR qu'en HEVC) — le fMP4 du
+        // StreamBuilder est conservé (remux HEVC copie, route HLS standard).
+        var si = new StreamInfo
+        {
+            ItemId = Guid.NewGuid(),
+            DeviceProfile = new DeviceProfile(),
+            SubProtocol = MediaStreamProtocol.hls,
+            Container = "mp4",
+            PlayMethod = PlayMethod.Transcode
+        };
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin iOS", true, null);
+
+        Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
+        Assert.Equal("mp4", si.Container);
+    }
+
+    [Fact]
+    public static void IsSourceSdrVideo_RangeHdr_RetourneFaux()
+    {
+        var source = new MediaSourceInfo
+        {
+            MediaStreams =
+            [
+                new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "hevc", ColorTransfer = "smpte2084", ColorPrimaries = "bt2020", ColorSpace = "bt2020nc" },
+                new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "eac3" }
+            ]
+        };
+
+        Assert.False(MediaInfoHelper.IsSourceSdrVideo(source));
+    }
+
+    [Fact]
+    public static void IsSourceSdrVideo_RangeSdr_RetourneVrai()
+    {
+        var source = new MediaSourceInfo
+        {
+            MediaStreams =
+            [
+                new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264", ColorTransfer = "bt709", ColorPrimaries = "bt709", ColorSpace = "bt709" },
+                new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "ac3" }
+            ]
+        };
+
+        Assert.True(MediaInfoHelper.IsSourceSdrVideo(source));
+    }
+
+    [Fact]
+    public static void IsSourceSdrVideo_SansVideoStream_RetourneVrai()
+    {
+        // Conservateur : sans flux vidéo identifié, le strip hevc TS s'applique.
+        var source = new MediaSourceInfo { MediaStreams = [new MediaStream { Index = 0, Type = MediaStreamType.Audio, Codec = "mp3" }] };
+
+        Assert.True(MediaInfoHelper.IsSourceSdrVideo(source));
+    }
+
+    [Fact]
     public static void VideoTranscode_Mediacodec_AppAppleTv_ForceByteRangeHls()
     {
         var si = AppleHlsTsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin Apple TV", null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin Apple TV", false, null);
 
         Assert.Equal(MediaStreamProtocol.hls, si.SubProtocol);
         Assert.Equal("ts", si.Container);
@@ -62,7 +122,7 @@ public static class ApplyHwMpegtsRouteAppleClientTests
     {
         // Le ExoPlayer Android consomme le TS progressif (validé 4,85×) : inchangé.
         var si = ProgressiveTsVideoStream();
-        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", null);
+        MediaInfoHelper.ApplyHwMpegtsRoute(si, DlnaProfileType.Video, PlayMethod.Transcode, HardwareAccelerationType.mediacodec, true, "Jellyfin for Android", false, null);
 
         Assert.Equal(MediaStreamProtocol.http, si.SubProtocol);
         Assert.Equal("ts", si.Container);
