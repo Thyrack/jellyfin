@@ -311,3 +311,4 @@ app-server/app/src/main/jniLibs/arm64-v8a/*
 !app-server/app/src/main/jniLibs/arm64-v8a/.gitkeep
 deployment/apk-android/.env
 deployment/apk-android/assets-logs/
+deployment/apk-android/.apphost-cache/

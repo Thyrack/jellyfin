@@ -103,25 +103,42 @@ for u in "${HOST_URLS[@]}"; do
   if curl -fL --retry 2 -o "$HOST_DEB" "$u"; then HOST_MIRROR="$u"; break; fi
   rm -f "$HOST_DEB"
 done
-if [ -z "$HOST_MIRROR" ]; then
+# Repli cache local (.apphost-cache/ — layout versionné, cf. README du déploiement) :
+# le pool termux épure les versions passées — les copies d'un bundle précédent
+# (contrôlées ci-dessous : ELF, NEEDED, chemin versionné HOST_VER/RT_VER, les
+# mêmes que le paquet) évitent l'impasse réseau sur des artefacts stables.
+HOST_CACHE_DIR="$DEPLOY_DIR/.apphost-cache/$HOST_VER"
+HOST_FROM_CACHE=0
+if [ -z "$HOST_MIRROR" ] && [ -f "$HOST_CACHE_DIR/dotnet" ]; then
+  HOST_FROM_CACHE=1
+elif [ -z "$HOST_MIRROR" ]; then
   printf 'VERDICT : téléchargement de l apphost termux impossible (miroirs accum.se et librehat) — escalade requise\n' >&2
   exit 1
 fi
-mkdir -p "$WORK/hostdata"
-ar p "$HOST_DEB" data.tar.xz > "$WORK/host-data.tar.xz"
-tar -xJf "$WORK/host-data.tar.xz" -C "$WORK/hostdata"
-# NB vérifié sur ce paquet : bin/dotnet est un wrapper shell aux chemins termux
-# (inutilisable tel quel) ; le muxer ELF bionic est la copie libexec ci-dessous
-APPHOST_SRC="$WORK/hostdata/data/data/com.termux/files/usr/lib/dotnet/dotnet"
-if [ ! -f "$APPHOST_SRC" ]; then
-  printf 'VERDICT : muxer ELF introuvable dans le paquet termux (layout changé ?) — escalade requise\n' >&2
-  exit 1
+if [ "$HOST_FROM_CACHE" -eq 1 ]; then
+  cp "$HOST_CACHE_DIR/dotnet" "$WORK/server/dotnet"
+  chmod 744 "$WORK/server/dotnet"
+else
+  mkdir -p "$WORK/hostdata"
+  ar p "$HOST_DEB" data.tar.xz > "$WORK/host-data.tar.xz"
+  tar -xJf "$WORK/host-data.tar.xz" -C "$WORK/hostdata"
+  # NB vérifié sur ce paquet : bin/dotnet est un wrapper shell aux chemins termux
+  # (inutilisable tel quel) ; le muxer ELF bionic est la copie libexec ci-dessous
+  APPHOST_SRC="$WORK/hostdata/data/data/com.termux/files/usr/lib/dotnet/dotnet"
+  if [ ! -f "$APPHOST_SRC" ]; then
+    printf 'VERDICT : muxer ELF introuvable dans le paquet termux (layout changé ?) — escalade requise\n' >&2
+    exit 1
+  fi
+  cp "$APPHOST_SRC" "$WORK/server/dotnet"
+  chmod 744 "$WORK/server/dotnet"
 fi
-cp "$APPHOST_SRC" "$WORK/server/dotnet"
-chmod 744 "$WORK/server/dotnet"
 : > "$LOGS_DIR/host-apphost.log"   # log par run (miroir du pattern merge.log)
 {
-  printf '[host-apphost] miroir=%s\n' "$HOST_MIRROR"
+  if [ "$HOST_FROM_CACHE" -eq 1 ]; then
+    printf '[host-apphost] cache local=%s (miroirs indisponibles)\n' "$HOST_CACHE_DIR/dotnet"
+  else
+    printf '[host-apphost] miroir=%s\n' "$HOST_MIRROR"
+  fi
   printf '[host-apphost] taille=%s octets\n' "$(stat -c %s "$WORK/server/dotnet")"
   printf '[host-apphost] sha256=%s\n' "$(sha256sum "$WORK/server/dotnet" | cut -d' ' -f1)"
   printf '[host-apphost] ELF: '
@@ -170,26 +187,54 @@ fetch_termux_deb() {
   return 1
 }
 : > "$LOGS_DIR/runtime-listing.log"   # listings sans la version exigée (par run)
+FXR_FROM_CACHE=0
 if ! fetch_termux_deb "dotnet-hostfxr-10.0" "$WORK/rtdata-fxr" "$RT_VER"; then
-  printf 'VERDICT : deb dotnet-hostfxr-10.0_%s_aarch64 indisponible (version absente au listing — cf. assets-logs/runtime-listing.log — ou miroirs inaccessibles) — escalade requise\n' "$RT_VER" >&2
-  exit 1
+  if [ ! -f "$HOST_CACHE_DIR/host/fxr/$RT_VER/libhostfxr.so" ]; then
+    printf 'VERDICT : deb dotnet-hostfxr-10.0_%s_aarch64 indisponible (version absente au listing — cf. assets-logs/runtime-listing.log — ou miroirs inaccessibles) — escalade requise\n' "$RT_VER" >&2
+    exit 1
+  fi
+  FXR_FROM_CACHE=1
 fi
-FXR_MIRROR="${FETCHED%%|*}"; FXR_DEB="${FETCHED##*|}"
+if [ "$FXR_FROM_CACHE" -eq 1 ]; then
+  FXR_MIRROR="cache-local"
+  FXR_DEB="$HOST_CACHE_DIR/host/fxr/$RT_VER/libhostfxr.so"
+else
+  FXR_MIRROR="${FETCHED%%|*}"; FXR_DEB="${FETCHED##*|}"
+fi
 FETCHED=""
+RT_FROM_CACHE=0
 if ! fetch_termux_deb "dotnet-runtime-10.0" "$WORK/rtdata" "$RT_VER"; then
-  printf 'VERDICT : deb dotnet-runtime-10.0_%s_aarch64 indisponible (version absente au listing — cf. assets-logs/runtime-listing.log — ou miroirs inaccessibles) — escalade requise\n' "$RT_VER" >&2
-  exit 1
+  if [ ! -f "$HOST_CACHE_DIR/libhostpolicy.so" ]; then
+    printf 'VERDICT : deb dotnet-runtime-10.0_%s_aarch64 indisponible (version absente au listing — cf. assets-logs/runtime-listing.log — ou miroirs inaccessibles) — escalade requise\n' "$RT_VER" >&2
+    exit 1
+  fi
+  RT_FROM_CACHE=1
 fi
-RT_MIRROR="${FETCHED%%|*}"; RT_DEB="${FETCHED##*|}"
+if [ "$RT_FROM_CACHE" -eq 1 ]; then
+  RT_MIRROR="cache-local"
+  RT_DEB="$HOST_CACHE_DIR/libhostpolicy.so"
+else
+  RT_MIRROR="${FETCHED%%|*}"; RT_DEB="${FETCHED##*|}"
+fi
+mkdir -p "$WORK/rtdata-fxr" "$WORK/rtdata"
 find "$WORK/rtdata-fxr" "$WORK/rtdata" > "$LOGS_DIR/rtextraction.list"   # layout réel journalisé (arborescence complète)
 HOSTFXR_SRC="$(find "$WORK/rtdata-fxr" -type f -name libhostfxr.so | head -1)"
 HOSTPOLICY_SRC="$(find "$WORK/rtdata" -type f -name libhostpolicy.so | head -1)"
 CORECLR_RT_SRC="$(find "$WORK/rtdata" -type f -name libcoreclr.so | head -1)"   # repéré, jamais mergé
+# Repli cache : copies directes vers les emplacements finaux (pas de layout de
+# paquet dans $WORK) — les contrôles (taille, sha, NEEDED) portent sur les
+# mêmes fichiers finaux que la voie réseau.
+if [ "$FXR_FROM_CACHE" -eq 1 ]; then
+  HOSTFXR_SRC="$FXR_DEB"
+fi
+if [ "$RT_FROM_CACHE" -eq 1 ]; then
+  HOSTPOLICY_SRC="$RT_DEB"
+fi
 if [ -z "$HOSTFXR_SRC" ] || [ -z "$HOSTPOLICY_SRC" ]; then
   printf 'VERDICT : libhostfxr.so ou libhostpolicy.so introuvable dans les paquets (layout changé ?) — escalade requise\n' >&2
   exit 1
 fi
-RT_VERSION="$(basename "$(dirname "$HOSTFXR_SRC")")"   # ex. 10.0.13
+RT_VERSION="$(basename "$(dirname "$HOSTFXR_SRC")")"   # ex. 10.0.13 (le layout du cache le reproduit)
 mkdir -p "$WORK/server/host/fxr/$RT_VERSION"
 cp "$HOSTFXR_SRC" "$WORK/server/host/fxr/$RT_VERSION/libhostfxr.so"
 # hostpolicy en self-contained muxé : chargé au niveau du bundle (racine du tar),
@@ -198,10 +243,20 @@ cp "$HOSTPOLICY_SRC" "$WORK/server/libhostpolicy.so"
 # NOT merge des libs framework (CoreCLR etc.) : notre 10.0.14 NuGet reste en place
 : > "$LOGS_DIR/rtfetch.log"   # log par run (miroir du pattern host-apphost.log)
 {
-  printf '[rtfetch] url_hostfxr=%s%s, sha256_deb=%s\n' \
-    "$FXR_MIRROR" "$FXR_DEB" "$(sha256sum "$WORK/$FXR_DEB" | cut -d' ' -f1)"
-  printf '[rtfetch] url_runtime=%s%s, sha256_deb=%s\n' \
-    "$RT_MIRROR" "$RT_DEB" "$(sha256sum "$WORK/$RT_DEB" | cut -d' ' -f1)"
+  if [ "$FXR_FROM_CACHE" -eq 1 ]; then
+    printf '[rtfetch] url_hostfxr=cache-local (%s), sha256=%s\n' \
+      "$FXR_DEB" "$(sha256sum "$FXR_DEB" | cut -d' ' -f1)"
+  else
+    printf '[rtfetch] url_hostfxr=%s%s, sha256_deb=%s\n' \
+      "$FXR_MIRROR" "$FXR_DEB" "$(sha256sum "$WORK/$FXR_DEB" | cut -d' ' -f1)"
+  fi
+  if [ "$RT_FROM_CACHE" -eq 1 ]; then
+    printf '[rtfetch] url_runtime=cache-local (%s), sha256=%s\n' \
+      "$RT_DEB" "$(sha256sum "$RT_DEB" | cut -d' ' -f1)"
+  else
+    printf '[rtfetch] url_runtime=%s%s, sha256_deb=%s\n' \
+      "$RT_MIRROR" "$RT_DEB" "$(sha256sum "$WORK/$RT_DEB" | cut -d' ' -f1)"
+  fi
   printf '[rtfetch] version_fxr=%s\n' "$RT_VERSION"
   if [ -n "$CORECLR_RT_SRC" ]; then
     printf '[rtfetch] libcoreclr.so paquet runtime : %s — non mergé (10.0.14 NuGet du bundle conservé)\n' "$CORECLR_RT_SRC"

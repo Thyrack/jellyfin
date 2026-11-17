@@ -57,6 +57,22 @@ Le serveur Jellyfin complet (net10.0 android-arm64) tourne dans un APK en foregr
 4. `cd app-server && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :app:assembleDebug`
 5. `export JF_SHIELD_IP=<ip> ; bash tools/probe/connect.sh ; DRY_RUN=0 bash deployment/apk-android/install-server.sh`
 
+### Cache local des artefacts Termux (`deployment/apk-android/.apphost-cache/`, gitigné)
+Le pool Termux épurant les versions passées, les paquets `dotnet-host-10.0`, `dotnet-hostfxr-10.0`
+et `dotnet-runtime-10.0` (versions exactes exigées) peuvent disparaître des miroirs. `collect-assets.sh`
+retombe alors sur les copies du bundle précédent, extraites de la Shield (`run-as … cat`), rangées
+au **layout versionné** — avec `HOST_VER`/`RT_VER` du script :
+
+```
+.apphost-cache/<HOST_VER>/dotnet                                # muxer ELF bionic
+.apphost-cache/<HOST_VER>/host/fxr/<RT_VER>/libhostfxr.so       # libhostfxr
+.apphost-cache/<HOST_VER>/libhostpolicy.so                      # libhostpolicy
+```
+
+Les contrôles du chemin réseau s'appliquent aux mêmes fichiers finaux (ELF, NEEDED sans termux,
+taille + sha256 dans `assets-logs/host-apphost.log`/`rtfetch.log` — origine tracée `cache-local`).
+Renouveler le cache (ou le purger pour forcer le chemin réseau) à chaque montée de version dotnet.
+
 ### Démarrage SANS télécommande
 - `adb shell am start -n org.jellyfin.shieldserver/.MainActivity` → l'app démarre le service automatiquement.
 - OU ouvrir l'icône « Jellyfin Server Shield » sur la TV (auto-start à l'ouverture).
