@@ -47,6 +47,14 @@ public static class HwByteRangePlaylistBuilder
         job.HwByteRangeTotalEstimateBytes = BytesAt(totalDurationTicks, videoBitrate, audioBitrate);
         var totalDurationSec = totalDurationTicks / 10_000_000.0;
 
+        // G5-E v20 : l'ancre du job porte la position GLOBALE du début du fichier TS
+        // courant (démarrage à une position via startTimeTicks, re-anchor seek). Les
+        // offsets et les runtimeTicks publiés sont globaux : la route hwbyterange les
+        // ramène au fichier courant via localOffset = demandé − ancre (sinon 404).
+        // NB : pas de clamp ici — la route utilise l'ancre brute ; un clamp divergerait.
+        var anchorOffsetBytes = job.HwByteRangeAnchorOffset;
+        var anchorTimeSec = job.HwByteRangeAnchorTimeSec;
+
         var builder = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:4\n");
         // G5-D (Apple v19) : la playlist EVENT ne publie que la fenêtre encodée —
         // AVFoundation exige que chaque bloc annoncé existe : la timeline théorique
@@ -65,33 +73,54 @@ public static class HwByteRangePlaylistBuilder
         var separator = hasQuery ? "&" : "?";
         var segmentUrl = $"hwbyterange/{fileName}.ts{(hasQuery ? queryString : string.Empty)}";
         var availableSec = availableBytes * 8.0 / Math.Max(videoBitrate + audioBitrate, 1);
-        var publishedSec = Math.Min(availableSec, totalDurationSec);
+        var publishedSec = Math.Min(availableSec, Math.Max(totalDurationSec - anchorTimeSec, 0));
         var blocksPublished = (int)Math.Floor(publishedSec / blockSeconds);
         for (var i = 0; i < blocksPublished; i++)
         {
-            var startSec = i * blockSeconds;
-            var endSec = Math.Min((i + 1) * blockSeconds, totalDurationSec);
-            var startOffset = BytesAt((long)(startSec * 10_000_000), videoBitrate, audioBitrate);
-            var endOffset = Math.Min(BytesAt((long)(endSec * 10_000_000), videoBitrate, audioBitrate), availableBytes);
-            var len = endOffset - startOffset;
-            if (len <= 0)
+            var startSec = anchorTimeSec + (i * blockSeconds);
+            var endSec = Math.Min(anchorTimeSec + ((i + 1) * blockSeconds), totalDurationSec);
+            var localStartBytes = BytesAt((long)((startSec - anchorTimeSec) * 10_000_000), videoBitrate, audioBitrate);
+            var localEndBytes = Math.Min(BytesAt((long)((endSec - anchorTimeSec) * 10_000_000), videoBitrate, audioBitrate), availableBytes);
+            if (localEndBytes <= localStartBytes)
             {
-                continue;
+                continue;   // garde anti bloc vide (coïncidence exacte clamp/offset)
             }
 
-            builder.Append("#EXTINF:")
-                .Append((endSec - startSec).ToString("0.000", CultureInfo.InvariantCulture))
-                .Append(",\n");
-            builder.Append("#EXT-X-BYTERANGE:").Append(len).Append('@').Append(startOffset).Append('\n');
-            // Le handler du segment exige runtimeTicks/actualSegmentLengthTicks
-            // ([Required], pattern Jellyfin natif : les URLs de segments sont
-            // auto-descriptives) — l'absence renvoyait un 400 sur le premier bloc
-            // et faisait avorter ExoPlayer (« source error »).
-            builder.Append(segmentUrl)
-                .Append(separator)
-                .Append("runtimeTicks=").Append((long)(startSec * 10_000_000))
-                .Append("&actualSegmentLengthTicks=").Append((long)((endSec - startSec) * 10_000_000))
-                .Append('\n');
+            AppendRangeEntry(
+                builder,
+                segmentUrl,
+                separator,
+                startSec,
+                endSec,
+                anchorOffsetBytes + localStartBytes,
+                anchorOffsetBytes + localEndBytes);
+        }
+
+        // G5-E v20 : le reliquat final (< blockSeconds) est publié tel quel — sinon
+        // la fin du média est injoignable via la playlist, et une ancre dans la
+        // dernière fenêtre produisait une playlist VIDE (0 entrée EXTINF, rejet
+        // AVFoundation immédiat, cf. v19). Émission uniquement si la fenêtre couvre
+        // la fin du média (bloc terminal : taille stable, l'append-only est tenu) ;
+        // la garde blocksPublished==0 est un filet défensif — après l'attente du
+        // 1er chunk (≥ 7 s), une fenêtre non terminale produit toujours ≥ 1 bloc.
+        var remainderStartSec = anchorTimeSec + (blocksPublished * blockSeconds);
+        var remainderEndSec = Math.Min(anchorTimeSec + publishedSec, totalDurationSec);
+        var coversMediaEnd = remainderEndSec >= totalDurationSec - 0.001;
+        if ((blocksPublished == 0 || coversMediaEnd) && remainderEndSec > remainderStartSec)
+        {
+            var localRemStart = BytesAt((long)((remainderStartSec - anchorTimeSec) * 10_000_000), videoBitrate, audioBitrate);
+            var localRemEnd = Math.Min(BytesAt((long)((remainderEndSec - anchorTimeSec) * 10_000_000), videoBitrate, audioBitrate), availableBytes);
+            if (localRemEnd > localRemStart)
+            {
+                AppendRangeEntry(
+                    builder,
+                    segmentUrl,
+                    separator,
+                    remainderStartSec,
+                    remainderEndSec,
+                    anchorOffsetBytes + localRemStart,
+                    anchorOffsetBytes + localRemEnd);
+            }
         }
 
         if (job.HasExited)
@@ -100,6 +129,40 @@ public static class HwByteRangePlaylistBuilder
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Émet une entrée de bloc (durée, range global, URL auto-descriptive).
+    /// </summary>
+    /// <param name="builder">Le flux de texte de la playlist.</param>
+    /// <param name="segmentUrl">L'URL du segment (sans les paramètres de position).</param>
+    /// <param name="separator">'?' si la query est vide, sinon '&amp;'.</param>
+    /// <param name="startSec">Temps global de début du bloc (s).</param>
+    /// <param name="endSec">Temps global de fin du bloc (s).</param>
+    /// <param name="startOffset">Offset global de début du bloc (octets).</param>
+    /// <param name="endOffset">Offset global de fin du bloc (octets).</param>
+    private static void AppendRangeEntry(
+        StringBuilder builder,
+        string segmentUrl,
+        string separator,
+        double startSec,
+        double endSec,
+        long startOffset,
+        long endOffset)
+    {
+        builder.Append("#EXTINF:")
+            .Append((endSec - startSec).ToString("0.000", CultureInfo.InvariantCulture))
+            .Append(",\n");
+        builder.Append("#EXT-X-BYTERANGE:").Append(endOffset - startOffset).Append('@').Append(startOffset).Append('\n');
+        // Le handler du segment exige runtimeTicks/actualSegmentLengthTicks
+        // ([Required], pattern Jellyfin natif : les URLs de segments sont
+        // auto-descriptives) — l'absence renvoyait un 400 sur le premier bloc
+        // et faisait avorter ExoPlayer (« source error »).
+        builder.Append(segmentUrl)
+            .Append(separator)
+            .Append("runtimeTicks=").Append((long)(startSec * 10_000_000))
+            .Append("&actualSegmentLengthTicks=").Append((long)((endSec - startSec) * 10_000_000))
+            .Append('\n');
     }
 
     /// <summary>
