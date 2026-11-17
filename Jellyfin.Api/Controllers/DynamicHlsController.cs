@@ -1611,6 +1611,11 @@ public class DynamicHlsController : BaseJellyfinApiController
         var playlistPath = Path.ChangeExtension(state.OutputFilePath, ".m3u8");
         TranscodingJob? job;
 
+        // Les bitrates de sortie sont posés par GetStreamingState : disponibles avant
+        // le démarrage (l'ancre du démarrage en dérive, cf. plus bas).
+        var vBitrate = state.OutputVideoBitrate ?? 3_000_000;
+        var aBitrate = state.OutputAudioBitrate ?? 192_000;
+
         // G5-D : le muxer mpegts continu n'écrit pas de playlist — le StartFfMpeg doit
         // attendre le fichier TS lui-même (sinon l'attente du .m3u8 expire et le job
         // est tué, exit 254 até).
@@ -1635,6 +1640,22 @@ public class DynamicHlsController : BaseJellyfinApiController
                             cancellationTokenSource)
                         .ConfigureAwait(false);
                     job.HwByteRange = true;
+
+                    // G5-E v20 : démarrage à une position (startTimeTicks de la requête)
+                    // — l'ancre est posée AVANT la première publication : la playlist
+                    // couvre la position demandée dès le 1er bloc (sinon le client
+                    // repart de 0 et la position de reprise n'est plus sauvegardée :
+                    // timeline locale → zéro < MinResumePct).
+                    var startTicks = state.Request.StartTimeTicks ?? 0;
+                    if (startTicks > 0)
+                    {
+                        job.HwByteRangeAnchorTimeSec = startTicks / 10_000_000.0;
+                        job.HwByteRangeAnchorOffset = HwByteRangePlaylistBuilder.BytesAt(startTicks, vBitrate, aBitrate);
+                        _logger.LogDebug(
+                            "G5-D start ancré : {Sec}s (offset {Offset} octets)",
+                            job.HwByteRangeAnchorTimeSec,
+                            job.HwByteRangeAnchorOffset);
+                    }
                 }
                 catch
                 {
@@ -1645,6 +1666,19 @@ public class DynamicHlsController : BaseJellyfinApiController
             else
             {
                 job = _transcodeManager.OnTranscodeBeginRequest(playlistPath, TranscodingJobType);
+                // G5-E v20 : observabilité du cas « playlist existante + startTimeTicks
+                // différent » — le job survivant sert son ancre d'origine (choix KISS :
+                // le seek passe par le re-anchor de la route range) ; logué pour le
+                // diagnostic d'une reprise à la mauvaise position.
+                var existingTicks = state.Request.StartTimeTicks ?? 0;
+                if (job is not null && existingTicks > 0
+                    && Math.Abs((job.HwByteRangeAnchorTimeSec * 10_000_000) - existingTicks) > 10_000)
+                {
+                    _logger.LogDebug(
+                        "G5-D : startTimeTicks demandé ({Ticks}) ≠ ancre du job existant ({AnchorSec}s) — playlist existante servie",
+                        existingTicks,
+                        job.HwByteRangeAnchorTimeSec);
+                }
             }
         }
 
@@ -1661,8 +1695,6 @@ public class DynamicHlsController : BaseJellyfinApiController
         // session 21:44 : fichier=786432 octets → floor(4,8/6)=0 entrées), que
         // AVPlayer rejette immédiatement). Rappel : 1 s = 10^7 ticks.
         var tsPath = Path.ChangeExtension(state.OutputFilePath, ".ts");
-        var vBitrate = state.OutputVideoBitrate ?? 3_000_000;
-        var aBitrate = state.OutputAudioBitrate ?? 192_000;
         var firstChunkBytes = HwByteRangePlaylistBuilder.BytesAt(70_000_000, vBitrate, aBitrate);
         var sw = Stopwatch.StartNew();
         while (!cancellationToken.IsCancellationRequested && sw.ElapsedMilliseconds < 15000 && job?.HasExited is not true)
@@ -2001,6 +2033,12 @@ public class DynamicHlsController : BaseJellyfinApiController
             // sinon double re-anchor (les jobs se tuent mutuellement, les fichiers
             // {hash}-{gen}.ts s'écrasent deux fois). Les ancres précédentes sont
             // capturées pour une restauration EXACTE au catch.
+            // ⚠ Ordre d'écriture du couple (gen, offset, time) SANS verrou (choix
+            // v17 : le lock playlist retenait les prefetchs 8-12 s) : un Build de
+            // playlist intercalé entre l'écriture de l'offset et celle du temps
+            // publierait des octets justes avec un temps dérivé. L'ordre offset→
+            // temps est le moins mauvais (l'octet prime sur le temps pour le
+            // serving) ; le fenêtre de tornade est de l'ordre de la microseconde.
             var previousGeneration = job.HwByteRangeGeneration;
             var previousAnchorOffset = job.HwByteRangeAnchorOffset;
             var previousAnchorTimeSec = job.HwByteRangeAnchorTimeSec;

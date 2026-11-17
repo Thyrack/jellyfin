@@ -58,7 +58,19 @@ public class ExceptionMiddleware
         {
             if (context.Response.HasStarted)
             {
-                _logger.LogWarning("The response has already started, the exception middleware will not be executed.");
+                // L'exception est loggée avec son type : les avorts client (seek →
+                // kill de flux HLS, fréquents) passent en Debug, le reste en Warning
+                // avec la stack — le reset client et le bug serveur ne doivent plus
+                // être indistinguables dans le journal.
+                if (ex is OperationCanceledException or IOException)
+                {
+                    _logger.LogDebug(ex, "Response already started and aborted (client disconnect or seek): {Type}", ex.GetType().Name);
+                }
+                else
+                {
+                    _logger.LogWarning(ex, "The response has already started, the exception middleware will not be executed.");
+                }
+
                 throw;
             }
 
